@@ -17,7 +17,7 @@ class BaseLoader(ABC):
     def __init__(self, llm_settings: LLMSettings):
         self.llm_settings = llm_settings
         self.llm_client = LLMClient(llm_settings)
-    
+
     @abstractmethod
     async def load_source(self, source: Any) -> AsyncGenerator[Document, None]:
         """특정 소스에서 문서를 로드합니다."""
@@ -30,7 +30,33 @@ class BaseLoader(ABC):
 
     def _should_process_document(self, doc: Document) -> bool:
         """문서를 처리할지 결정합니다."""
-        return bool(doc.text and doc.text.strip())
+        if not (doc.text and doc.text.strip()):
+            return False
+
+        # 증분 업데이트 검사
+        return self._is_document_updated(doc)
+
+    def _is_document_updated(self, doc: Document) -> bool:
+        """문서가 업데이트되었는지 확인 (SHA/수정시간 기반)"""
+        # 저장된 해시/수정시간과 비교
+        stored_hash = self._get_stored_document_hash(doc.id)
+        current_hash = self._calculate_document_hash(doc)
+
+        return stored_hash != current_hash
+
+    def _calculate_document_hash(self, doc: Document) -> str:
+        """문서 해시 계산"""
+        content = f"{doc.text}{doc.metadata.get('modified_time', '')}"
+        return hashlib.sha256(content.encode()).hexdigest()
+
+    def _get_stored_document_hash(self, doc_id: str) -> str:
+        """저장된 문서 해시 조회"""
+        # Redis에서 조회
+        return self.cache_client.get(f"doc_hash:{doc_id}") or ""
+
+    async def _update_document_hash(self, doc_id: str, hash_value: str):
+        """문서 해시 업데이트"""
+        await self.cache_client.set(f"doc_hash:{doc_id}", hash_value, expire=86400*7)  # 7일
 ```
 
 ### 2.2 Executor Pattern
@@ -57,10 +83,26 @@ class LoaderExecutor:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _execute_source(self, source_type: str, source: Any) -> None:
+        """소스 실행 시 에러 처리 및 재시도 로직 포함"""
         loader = self.loaders[source_type]
-        async for document in loader.load_source(source):
-            if loader._should_process_document(document):
-                await self._process_document(document)
+        retry_count = 0
+        max_retries = 3
+
+        while retry_count <= max_retries:
+            try:
+                async for document in loader.load_source(source):
+                    if loader._should_process_document(document):
+                        await self._process_document(document)
+                break  # 성공시 루프 종료
+            except Exception as e:
+                retry_count += 1
+                if retry_count > max_retries:
+                    logger.error(f"Failed to process {source_type} after {max_retries} retries: {e}")
+                    raise
+                else:
+                    wait_time = 2 ** retry_count  # 지수 백오프
+                    logger.warning(f"Retry {retry_count}/{max_retries} for {source_type} in {wait_time}s: {e}")
+                    await asyncio.sleep(wait_time)
 ```
 
 ### 2.3 Service Layer 설계
@@ -113,43 +155,25 @@ class SummarizerService:
         return summary
 ```
 
-#### CacheClient (S3 + Redis 하이브리드)
+#### CacheClient (Redis 기반)
 ```python
 class CacheClient:
-    def __init__(self, s3_client: S3Client, redis_client: RedisClient):
-        self.s3_client = s3_client
+    def __init__(self, redis_client: RedisClient):
         self.redis_client = redis_client
 
     async def get(self, key: str) -> Optional[str]:
-        # 1. Redis에서 먼저 확인 (빠른 접근)
-        cached_value = await self.redis_client.get(key)
-        if cached_value:
-            return cached_value
+        """Redis에서 캐시 조회"""
+        return await self.redis_client.get(key)
 
-        # 2. S3에서 확인 (영구 저장소)
-        try:
-            s3_value = await self.s3_client.get_object(key)
-            if s3_value:
-                # S3에서 가져온 값을 Redis에 캐시
-                await self.redis_client.set(key, s3_value, expire=3600)
-                return s3_value
-        except NoSuchKeyError:
-            pass
-
-        return None
-
-    async def set(self, key: str, value: str, expire: int = 86400) -> None:
-        # 1. Redis에 단기 캐시 저장
-        await self.redis_client.set(key, value, expire=min(expire, 3600))
-
-        # 2. S3에 장기 캐시 저장 (비동기)
-        await self.s3_client.put_object(key, value)
+    async def set(self, key: str, value: str, expire: int = 3600) -> None:
+        """Redis에 캐시 저장 (기본 1시간)"""
+        await self.redis_client.set(key, value, expire=expire)
 
     def _generate_cache_key(self, text: str) -> str:
         hasher = hashlib.sha256()
         hasher.update(text.encode("utf-8"))
         digest = hasher.hexdigest()
-        return f"summary/{digest[:4]}/{digest}"
+        return f"summary:{digest[:16]}"
 ```
 
 #### LLMClient (사내 Proxy 및 OpenAI 지원)
@@ -159,13 +183,13 @@ class LLMSettings:
     def __init__(self):
         # 프로바이더 선택: "internal" 또는 "openai"
         self.provider = os.getenv("LLM_PROVIDER", "internal")
-        
+
         # 사내 LLM 프록시 설정
         self.internal_base_url = os.getenv("INTERNAL_LLM_URL", "https://your-internal-llm-proxy.com")
         self.internal_api_key = os.getenv("INTERNAL_API_KEY", "")
         self.internal_model = os.getenv("INTERNAL_MODEL", "gpt-3.5-turbo")
         self.internal_embedding_model = os.getenv("INTERNAL_EMBEDDING_MODEL", "text-embedding-ada-002")
-        
+
         # OpenAI 직접 연결 설정
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
         self.openai_base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -177,7 +201,7 @@ class LLMClient:
     def __init__(self, settings: LLMSettings):
         self.settings = settings
         self.client = self._create_client()
-    
+
     def _create_client(self) -> AsyncOpenAI:
         """설정에 따라 적절한 OpenAI 클라이언트 생성"""
         if self.settings.provider == "openai":
@@ -193,7 +217,7 @@ class LLMClient:
                 api_key=self.settings.internal_api_key,
                 timeout=30.0
             )
-    
+
     def _get_model(self, model_type: str = "chat") -> str:
         """프로바이더에 따른 모델명 반환"""
         if self.settings.provider == "openai":
@@ -214,6 +238,761 @@ class LLMClient:
         )
 
         return response.choices[0].message.content
+
+## 로깅 및 모니터링
+
+### 구조화된 로깅
+```python
+import structlog
+
+# 로깅 설정
+structlog.configure(
+    processors=[
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.JSONRenderer()
+    ],
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)
+
+class LoaderExecutor:
+    def __init__(self, config: LoaderConfig, llm_settings: LLMSettings):
+        self.logger = structlog.get_logger()
+        # ... 기존 코드
+
+    async def _execute_source(self, source_type: str, source: Any) -> None:
+        start_time = time.time()
+        self.logger.info(
+            "loader_execution_started",
+            source_type=source_type,
+            source_key=getattr(source, 'key', 'unknown')
+        )
+
+        try:
+            # ... 기존 실행 로직
+
+            execution_time = time.time() - start_time
+            self.logger.info(
+                "loader_execution_completed",
+                source_type=source_type,
+                source_key=getattr(source, 'key', 'unknown'),
+                execution_time=execution_time,
+                documents_processed=processed_count
+            )
+
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self.logger.error(
+                "loader_execution_failed",
+                source_type=source_type,
+                source_key=getattr(source, 'key', 'unknown'),
+                execution_time=execution_time,
+                error=str(e),
+                error_type=type(e).__name__
+            )
+            raise
+```
+
+### 메트릭 수집
+```python
+from dataclasses import dataclass
+from typing import Dict, Optional
+import time
+
+@dataclass
+class LoaderMetrics:
+    source_type: str
+    source_key: str
+    start_time: float
+    end_time: Optional[float] = None
+    documents_processed: int = 0
+    documents_failed: int = 0
+    api_calls_made: int = 0
+    cache_hits: int = 0
+    cache_misses: int = 0
+    error_count: int = 0
+    last_error: Optional[str] = None
+
+    @property
+    def execution_time(self) -> Optional[float]:
+        if self.end_time:
+            return self.end_time - self.start_time
+        return None
+
+    @property
+    def success_rate(self) -> float:
+        total = self.documents_processed + self.documents_failed
+        return self.documents_processed / total if total > 0 else 0.0
+
+    @property
+    def cache_hit_rate(self) -> float:
+        total = self.cache_hits + self.cache_misses
+        return self.cache_hits / total if total > 0 else 0.0
+
+class MetricsCollector:
+    def __init__(self):
+        self.metrics: Dict[str, LoaderMetrics] = {}
+
+    def start_execution(self, source_type: str, source_key: str):
+        key = f"{source_type}:{source_key}"
+        self.metrics[key] = LoaderMetrics(
+            source_type=source_type,
+            source_key=source_key,
+            start_time=time.time()
+        )
+
+    def end_execution(self, source_type: str, source_key: str):
+        key = f"{source_type}:{source_key}"
+        if key in self.metrics:
+            self.metrics[key].end_time = time.time()
+
+    def record_document_processed(self, source_type: str, source_key: str):
+        key = f"{source_type}:{source_key}"
+        if key in self.metrics:
+            self.metrics[key].documents_processed += 1
+
+    def record_api_call(self, source_type: str, source_key: str):
+        key = f"{source_type}:{source_key}"
+        if key in self.metrics:
+            self.metrics[key].api_calls_made += 1
+
+    def record_cache_hit(self, source_type: str, source_key: str):
+        key = f"{source_type}:{source_key}"
+        if key in self.metrics:
+            self.metrics[key].cache_hits += 1
+
+    def record_cache_miss(self, source_type: str, source_key: str):
+        key = f"{source_type}:{source_key}"
+        if key in self.metrics:
+            self.metrics[key].cache_misses += 1
+
+    def get_summary(self) -> Dict[str, any]:
+        """전체 실행 요약 반환"""
+        total_execution_time = sum(
+            m.execution_time for m in self.metrics.values()
+            if m.execution_time is not None
+        )
+        total_documents = sum(m.documents_processed for m in self.metrics.values())
+        total_api_calls = sum(m.api_calls_made for m in self.metrics.values())
+
+        return {
+            "total_sources": len(self.metrics),
+            "total_execution_time": total_execution_time,
+            "total_documents_processed": total_documents,
+            "total_api_calls": total_api_calls,
+            "average_success_rate": sum(m.success_rate for m in self.metrics.values()) / len(self.metrics),
+            "average_cache_hit_rate": sum(m.cache_hit_rate for m in self.metrics.values()) / len(self.metrics),
+            "sources": {k: v for k, v in self.metrics.items()}
+        }
+```
+
+### 헬스 체크 및 상태 모니터링
+```python
+from fastapi import FastAPI, HTTPException
+from datetime import datetime, timedelta
+
+app = FastAPI()
+
+@app.get("/health")
+async def health_check():
+    """기본 헬스 체크"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "version": "1.0.0"
+    }
+
+@app.get("/health/detailed")
+async def detailed_health_check():
+    """상세 헬스 체크"""
+    checks = {
+        "redis": await check_redis_connection(),
+        "embedding_service": await check_embedding_service(),
+        "llm_service": await check_llm_service()
+    }
+
+    all_healthy = all(checks.values())
+
+    return {
+        "status": "healthy" if all_healthy else "unhealthy",
+        "timestamp": datetime.now().isoformat(),
+        "checks": checks
+    }
+
+@app.get("/metrics")
+async def get_metrics():
+    """메트릭 엔드포인트"""
+    return metrics_collector.get_summary()
+
+@app.get("/metrics/sources/{source_type}")
+async def get_source_metrics(source_type: str):
+    """소스별 메트릭"""
+    source_metrics = {
+        k: v for k, v in metrics_collector.metrics.items()
+        if v.source_type == source_type
+    }
+
+    if not source_metrics:
+        raise HTTPException(status_code=404, detail=f"No metrics found for {source_type}")
+
+    return source_metrics
+
+async def check_redis_connection() -> bool:
+    """Redis 연결 확인"""
+    try:
+        await redis_client.ping()
+        return True
+    except Exception:
+        return False
+
+async def check_embedding_service() -> bool:
+    """임베딩 서비스 연결 확인"""
+    try:
+        # 간단한 테스트 요청
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{EMBEDDING_SERVICE_URL}/health", timeout=5) as response:
+                return response.status == 200
+    except Exception:
+        return False
+
+async def check_llm_service() -> bool:
+    """LLM 서비스 연결 확인"""
+    try:
+        # 간단한 테스트 요약 요청
+        test_response = await llm_client.summarize("test", max_tokens=10)
+        return bool(test_response)
+    except Exception:
+        return False
+```
+
+## 설정 검증 및 오류 처리
+
+### YAML 스키마 검증
+```python
+from pydantic import BaseModel, ValidationError, validator
+from typing import List, Optional, Literal
+from datetime import datetime
+
+class SourceConfigSchema(BaseModel):
+    """Base 소스 설정 스키마"""
+    key: str
+    type: str
+
+    @validator('key')
+    def key_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError('key cannot be empty')
+        return v.strip()
+
+class SlackSourceSchema(SourceConfigSchema):
+    workspace: str
+    channel: str
+    name: str
+    type: Literal["slack"] = "slack"
+
+    @validator('channel')
+    def channel_must_be_valid(cls, v):
+        if not v.startswith('C') or len(v) != 11:
+            raise ValueError('channel must be a valid Slack channel ID (C + 10 chars)')
+        return v
+
+class GitHubSourceSchema(SourceConfigSchema):
+    owner: str
+    name: str
+    type: Literal["github"] = "github"
+    source_type: Literal["issues", "files", "source_code"]
+
+    @validator('owner', 'name')
+    def github_names_must_be_valid(cls, v):
+        if not v or '/' in v or ' ' in v:
+            raise ValueError('GitHub owner/name must not contain spaces or slashes')
+        return v
+
+class ConfluenceSourceSchema(SourceConfigSchema):
+    space: str
+    type: Literal["confluence"] = "confluence"
+
+    @validator('space')
+    def space_must_be_valid(cls, v):
+        if not v or len(v) > 10:
+            raise ValueError('Confluence space key must be 1-10 characters')
+        return v.upper()
+
+class ConfigValidator:
+    def __init__(self):
+        self.schemas = {
+            "slack": SlackSourceSchema,
+            "github": GitHubSourceSchema,
+            "confluence": ConfluenceSourceSchema
+        }
+
+    def validate_source_config(self, source_data: dict) -> BaseModel:
+        """소스 설정 검증"""
+        source_type = source_data.get('type')
+        if not source_type:
+            raise ValidationError('source type is required')
+
+        schema_class = self.schemas.get(source_type)
+        if not schema_class:
+            raise ValidationError(f'unsupported source type: {source_type}')
+
+        try:
+            return schema_class(**source_data)
+        except ValidationError as e:
+            raise ValidationError(f'validation failed for {source_type}: {e}')
+
+    def validate_environment_variables(self) -> List[str]:
+        """필수 환경변수 검증"""
+        missing_vars = []
+        required_vars = {
+            'EMBEDDING_SERVICE_URL': 'Embedding service URL',
+            'LLM_PROVIDER': 'LLM provider (internal/openai)',
+            'REDIS_HOST': 'Redis host',
+            'REDIS_PORT': 'Redis port'
+        }
+
+        for var, description in required_vars.items():
+            if not os.getenv(var):
+                missing_vars.append(f'{var} ({description})')
+
+        # LLM 프로바이더별 추가 검증
+        llm_provider = os.getenv('LLM_PROVIDER', '').lower()
+        if llm_provider == 'internal':
+            if not os.getenv('INTERNAL_LLM_URL'):
+                missing_vars.append('INTERNAL_LLM_URL (for internal LLM provider)')
+            if not os.getenv('INTERNAL_API_KEY'):
+                missing_vars.append('INTERNAL_API_KEY (for internal LLM provider)')
+        elif llm_provider == 'openai':
+            if not os.getenv('OPENAI_API_KEY'):
+                missing_vars.append('OPENAI_API_KEY (for OpenAI provider)')
+
+        return missing_vars
+
+    def validate_api_credentials(self) -> Dict[str, bool]:
+        """각 API 자격 증명 검증"""
+        results = {}
+
+        # Slack 토큰 검증
+        slack_token = os.getenv('SLACK_BOT_TOKEN')
+        if slack_token:
+            results['slack'] = slack_token.startswith('xoxb-') and len(slack_token) > 50
+        else:
+            results['slack'] = False
+
+        # GitHub 설정 검증
+        github_app_id = os.getenv('GITHUB_APP_ID')
+        github_key_path = os.getenv('GITHUB_PRIVATE_KEY_PATH')
+        if github_app_id and github_key_path:
+            results['github'] = github_app_id.isdigit() and os.path.exists(github_key_path)
+        else:
+            results['github'] = False
+
+        # Confluence 설정 검증
+        confluence_email = os.getenv('CONFLUENCE_EMAIL')
+        confluence_token = os.getenv('CONFLUENCE_API_TOKEN')
+        if confluence_email and confluence_token:
+            results['confluence'] = '@' in confluence_email and len(confluence_token) > 10
+        else:
+            results['confluence'] = False
+
+        return results
+
+# 시작 시 검증 실행
+async def validate_startup_configuration():
+    """시작 시 전체 설정 검증"""
+    validator = ConfigValidator()
+
+    # 1. 환경변수 검증
+    missing_vars = validator.validate_environment_variables()
+    if missing_vars:
+        raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+
+    # 2. API 자격증명 검증
+    credential_results = validator.validate_api_credentials()
+    invalid_credentials = [k for k, v in credential_results.items() if not v]
+    if invalid_credentials:
+        logger.warning(f"Invalid credentials for: {', '.join(invalid_credentials)}")
+
+    # 3. 외부 서비스 연결 검증
+    service_health = {
+        "redis": await check_redis_connection(),
+        "embedding_service": await check_embedding_service(),
+        "llm_service": await check_llm_service()
+    }
+
+    unhealthy_services = [k for k, v in service_health.items() if not v]
+    if unhealthy_services:
+        raise ConnectionError(f"Cannot connect to services: {', '.join(unhealthy_services)}")
+
+    logger.info("Startup configuration validation completed successfully")
+```
+
+### 런타임 오류 처리
+```python
+class ContentLoaderError(Exception):
+    """Base 예외 클래스"""
+    pass
+
+class ConfigurationError(ContentLoaderError):
+    """설정 오류"""
+    pass
+
+class APIConnectionError(ContentLoaderError):
+    """외부 API 연결 오류"""
+    pass
+
+class DataProcessingError(ContentLoaderError):
+    """데이터 처리 오류"""
+    pass
+
+# 전역 예외 핸들러
+@app.exception_handler(ContentLoaderError)
+async def content_loader_exception_handler(request, exc):
+    logger.error(
+        "content_loader_error",
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+        request_path=str(request.url)
+    )
+
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": type(exc).__name__,
+            "message": str(exc),
+            "timestamp": datetime.now().isoformat()
+        }
+    )
+
+@app.exception_handler(ValidationError)
+async def validation_exception_handler(request, exc):
+    logger.warning(
+        "validation_error",
+        error_details=exc.errors(),
+        request_path=str(request.url)
+    )
+
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "ValidationError",
+            "details": exc.errors(),
+            "timestamp": datetime.now().isoformat()
+        }
+    )
+```
+
+## 성능 최적화 및 메모리 관리
+
+### 비동기 처리 최적화
+```python
+import asyncio
+from asyncio import Semaphore, Queue
+from typing import AsyncGenerator
+
+class PerformanceOptimizedExecutor:
+    def __init__(self, config: LoaderConfig, llm_settings: LLMSettings):
+        self.config = config
+        self.llm_settings = llm_settings
+
+        # 동시 실행 제한
+        self.max_concurrent_sources = 3
+        self.max_concurrent_documents = 10
+
+        # 세마포어 설정
+        self.source_semaphore = Semaphore(self.max_concurrent_sources)
+        self.document_semaphore = Semaphore(self.max_concurrent_documents)
+
+        # 배치 처리를 위한 큐
+        self.document_queue = Queue(maxsize=100)
+
+    async def execute_all_optimized(self) -> None:
+        """성능 최적화된 모든 소스 실행"""
+        # 배치 처리기 시작
+        batch_processor_task = asyncio.create_task(self._batch_processor())
+
+        # 소스별 태스크 생성
+        tasks = []
+        for source_type, sources in self.config.sources.items():
+            for source in sources:
+                task = asyncio.create_task(
+                    self._execute_source_with_semaphore(source_type, source)
+                )
+                tasks.append(task)
+
+        # 모든 소스 실행 대기
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 큐 종료 신호 및 배치 처리기 종료 대기
+        await self.document_queue.put(None)  # 종료 신호
+        await batch_processor_task
+
+    async def _execute_source_with_semaphore(self, source_type: str, source: Any):
+        """세마포어를 사용한 소스 실행"""
+        async with self.source_semaphore:
+            loader = self.loaders[source_type]
+
+            async for document in loader.load_source(source):
+                if loader._should_process_document(document):
+                    # 문서를 배치 처리 큐에 추가
+                    await self.document_queue.put(document)
+
+    async def _batch_processor(self):
+        """배치 단위 문서 처리"""
+        batch = []
+        batch_size = 10
+
+        while True:
+            try:
+                # 1초 타임아웃으로 문서 수집
+                document = await asyncio.wait_for(
+                    self.document_queue.get(),
+                    timeout=1.0
+                )
+
+                if document is None:  # 종료 신호
+                    if batch:
+                        await self._process_document_batch(batch)
+                    break
+
+                batch.append(document)
+
+                # 배치 크기에 도달하면 처리
+                if len(batch) >= batch_size:
+                    await self._process_document_batch(batch)
+                    batch = []
+
+            except asyncio.TimeoutError:
+                # 타임아웃 시 현재 배치 처리
+                if batch:
+                    await self._process_document_batch(batch)
+                    batch = []
+
+    async def _process_document_batch(self, documents: List[Document]):
+        """문서 배치 처리"""
+        if not documents:
+            return
+
+        # 청킹
+        chunked_docs = []
+        for doc in documents:
+            chunks = await self._chunk_document(doc)
+            chunked_docs.extend(chunks)
+
+        # 요약 (배치 처리)
+        if self.config.summarization_enabled:
+            summarized_docs = await self._batch_summarize(chunked_docs)
+        else:
+            summarized_docs = chunked_docs
+
+        # 임베딩 서비스에 전송
+        await self._send_to_embedding_service(summarized_docs)
+```
+
+### 메모리 관리 전략
+```python
+import gc
+import psutil
+from typing import Optional
+from dataclasses import dataclass
+
+@dataclass
+class MemoryConfig:
+    max_memory_mb: int = 2048  # 2GB
+    gc_threshold_mb: int = 1536  # 1.5GB
+    chunk_size_limit: int = 1024  # 1KB per chunk
+    max_chunks_in_memory: int = 1000
+
+class MemoryManager:
+    def __init__(self, config: MemoryConfig):
+        self.config = config
+        self.chunks_in_memory = 0
+        self.process = psutil.Process()
+
+    def get_memory_usage_mb(self) -> float:
+        """현재 메모리 사용량 (MB)"""
+        memory_info = self.process.memory_info()
+        return memory_info.rss / 1024 / 1024
+
+    def should_trigger_gc(self) -> bool:
+        """가비지 컴렉션 실행 여부 판단"""
+        current_memory = self.get_memory_usage_mb()
+        return current_memory > self.config.gc_threshold_mb
+
+    def should_pause_processing(self) -> bool:
+        """처리 일시 중지 여부 판단"""
+        current_memory = self.get_memory_usage_mb()
+        return current_memory > self.config.max_memory_mb
+
+    async def manage_memory_pressure(self):
+        """메모리 압박 관리"""
+        if self.should_trigger_gc():
+            logger.warning(f"Memory usage high: {self.get_memory_usage_mb():.1f}MB, triggering GC")
+            gc.collect()
+
+        if self.should_pause_processing():
+            logger.error(f"Memory usage critical: {self.get_memory_usage_mb():.1f}MB, pausing processing")
+            # 진행 중인 처리 일시 중지
+            await asyncio.sleep(5)  # 5초 대기
+            gc.collect()
+
+    def track_chunk_creation(self, chunk_size: int):
+        """청크 생성 추적"""
+        if chunk_size > self.config.chunk_size_limit:
+            logger.warning(f"Large chunk created: {chunk_size} bytes")
+
+        self.chunks_in_memory += 1
+        if self.chunks_in_memory > self.config.max_chunks_in_memory:
+            logger.warning(f"Too many chunks in memory: {self.chunks_in_memory}")
+
+    def track_chunk_deletion(self):
+        """청크 삭제 추적"""
+        self.chunks_in_memory = max(0, self.chunks_in_memory - 1)
+
+# 메모리 관리를 포함한 버전
+class MemoryAwareLoader(BaseLoader):
+    def __init__(self, memory_manager: MemoryManager):
+        self.memory_manager = memory_manager
+
+    async def load_source(self, source: Any) -> AsyncGenerator[Document, None]:
+        document_count = 0
+
+        async for document in self._load_source_impl(source):
+            # 메모리 압박 검사
+            await self.memory_manager.manage_memory_pressure()
+
+            yield document
+            document_count += 1
+
+            # 100개 문서마다 메모리 상태 확인
+            if document_count % 100 == 0:
+                memory_usage = self.memory_manager.get_memory_usage_mb()
+                logger.info(f"Processed {document_count} documents, memory: {memory_usage:.1f}MB")
+
+    async def _chunk_document_with_memory_management(self, document: Document) -> List[Document]:
+        """메모리 관리를 포함한 문서 청킹"""
+        chunks = []
+
+        # 기본 청킹 로직
+        text_chunks = self._split_text(document.text)
+
+        for i, chunk_text in enumerate(text_chunks):
+            chunk_doc = Document(
+                id=f"{document.id}_chunk_{i}",
+                text=chunk_text,
+                metadata={**document.metadata, "chunk_index": i}
+            )
+
+            # 청크 크기 추적
+            chunk_size = len(chunk_text.encode('utf-8'))
+            self.memory_manager.track_chunk_creation(chunk_size)
+
+            chunks.append(chunk_doc)
+
+            # 메모리 압박 검사
+            if self.memory_manager.should_pause_processing():
+                logger.warning("Memory pressure detected during chunking, yielding control")
+                await asyncio.sleep(0.1)  # 시스템에 제어권 양보
+
+        return chunks
+```
+
+### 대용량 데이터 처리 전략
+```python
+class LargeDataProcessor:
+    def __init__(self, memory_manager: MemoryManager):
+        self.memory_manager = memory_manager
+        self.temp_storage_path = "/tmp/content-loader"
+        os.makedirs(self.temp_storage_path, exist_ok=True)
+
+    async def process_large_repository(self, repo_source: GitHubSource) -> AsyncGenerator[Document, None]:
+        """대용량 리포지토리 스트리밍 처리"""
+        files = await self._get_repository_files(repo_source)
+
+        # 파일 크기별 정렬 (작은 파일부터)
+        files.sort(key=lambda f: f.size)
+
+        batch_size = 10
+        current_batch = []
+
+        for file in files:
+            # 대용량 파일은 바로 처리
+            if file.size > 1024 * 1024:  # 1MB 이상
+                async for doc in self._process_large_file(file, repo_source):
+                    yield doc
+            else:
+                current_batch.append(file)
+
+                # 배치 처리
+                if len(current_batch) >= batch_size:
+                    async for doc in self._process_file_batch(current_batch, repo_source):
+                        yield doc
+                    current_batch = []
+
+                    # 메모리 압박 검사
+                    await self.memory_manager.manage_memory_pressure()
+
+        # 남은 배치 처리
+        if current_batch:
+            async for doc in self._process_file_batch(current_batch, repo_source):
+                yield doc
+
+    async def _process_large_file(self, file: GitHubFile, source: GitHubSource) -> AsyncGenerator[Document, None]:
+        """대용량 파일 스트리밍 처리"""
+        # 파일을 임시 디스크에 저장
+        temp_file_path = os.path.join(self.temp_storage_path, f"{file.sha}.tmp")
+
+        try:
+            # 파일 다운로드
+            await self._download_file_to_disk(file, temp_file_path)
+
+            # 스트리밍 방식으로 청킹
+            async for chunk_doc in self._stream_chunk_file(temp_file_path, file, source):
+                yield chunk_doc
+
+        finally:
+            # 임시 파일 삭제
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+
+    async def _stream_chunk_file(self, file_path: str, file: GitHubFile, source: GitHubSource) -> AsyncGenerator[Document, None]:
+        """파일 스트리밍 청킹"""
+        chunk_size = 2048  # 2KB 청크
+        chunk_index = 0
+
+        with open(file_path, 'r', encoding='utf-8') as f:
+            while True:
+                chunk_text = f.read(chunk_size)
+                if not chunk_text:
+                    break
+
+                # 청크 문서 생성
+                chunk_doc = Document(
+                    id=f"{file.path}_chunk_{chunk_index}",
+                    text=chunk_text,
+                    metadata={
+                        "source_type": "github",
+                        "file_path": file.path,
+                        "chunk_index": chunk_index,
+                        "file_sha": file.sha
+                    }
+                )
+
+                yield chunk_doc
+                chunk_index += 1
+
+                # 메모리 압박 검사
+                if chunk_index % 50 == 0:  # 50개 청크마다
+                    await self.memory_manager.manage_memory_pressure()
+```
 
     async def generate_embedding(self, texts: List[str]) -> List[List[float]]:
         model = self._get_model("embedding")
@@ -445,20 +1224,14 @@ services:
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
       - CONFLUENCE_EMAIL=${CONFLUENCE_EMAIL}
       - CONFLUENCE_API_TOKEN=${CONFLUENCE_API_TOKEN}
-      # AWS 캐싱 설정
-      - S3_ENDPOINT=http://minio:9000
-      - AWS_ACCESS_KEY_ID=minio
-      - AWS_SECRET_ACCESS_KEY=miniominio
+      # Redis 캐싱 설정
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - SUMMARY_CACHE_BUCKET=content-loader-summary-cache
-      - METADATA_CACHE_BUCKET=content-loader-metadata-cache
     volumes:
       - ./config:/app/config
       - ./secrets:/app/secrets
     depends_on:
       - redis
-      - minio
 
   redis:
     image: redis:7-alpine
@@ -475,34 +1248,6 @@ services:
       - REDIS_HOSTS=local:redis:6379
     depends_on:
       - redis
-
-  # MinIO (S3 호환 객체 스토리지)
-  minio:
-    image: minio/minio:RELEASE.2023-05-04T21-44-30Z
-    ports:
-      - "9000:9000"    # API 포트
-      - "9001:9001"    # 웹 콘솔 포트
-    environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: miniominio
-    command: server /data --console-address ":9001"
-    volumes:
-      - minio_data:/data
-
-  # MinIO 초기 설정 (버킷 생성)
-  minio-init:
-    image: minio/mc:RELEASE.2023-05-04T18-10-16Z
-    depends_on:
-      - minio
-    entrypoint: >
-      /bin/sh -c "
-      /usr/bin/mc config host add minio http://minio:9000 minio miniominio;
-      /usr/bin/mc mb minio/content-loader-summary-cache;
-      /usr/bin/mc mb minio/content-loader-metadata-cache;
-      /usr/bin/mc policy set public minio/content-loader-summary-cache;
-      /usr/bin/mc policy set public minio/content-loader-metadata-cache;
-      exit 0;
-      "
 
   embedding-retrieval:
     image: embedding-retrieval:latest
@@ -523,7 +1268,6 @@ services:
 
 volumes:
   qdrant_data:
-  minio_data:
 ```
 
 #### 실행 명령어
@@ -543,28 +1287,15 @@ docker-compose exec content-loader python -m content_loader.main --run-once
 
 ### 3.5 로컬 개발 환경 설정 및 모니터링
 
-#### 로컬 AWS 서비스 접근 정보
+#### 로컬 개발 서비스 접근 정보
 
 | 서비스 | 접속 URL | 로그인 정보 |
 |--------|----------|-------------|
-| MinIO 웹 콘솔 | http://localhost:9001 | minio / miniominio |
 | Redis Commander | http://localhost:8081 | 로그인 불필요 |
 | Qdrant 대시보드 | http://localhost:6333/dashboard | 로그인 불필요 |
 
-#### 캐싱 동작 확인 방법
+#### Redis 캐시 확인 방법
 
-##### 1. S3 캐시 확인 (MinIO)
-```bash
-# MinIO 웹 콘솔에서 확인
-# 1. http://localhost:9001 접속
-# 2. minio/miniominio 로그인
-# 3. content-loader-summary-cache 버킷에서 캐시 파일 확인
-
-# 명령줄에서 확인
-docker-compose exec minio-init mc ls minio/content-loader-summary-cache
-```
-
-##### 2. Redis 캐시 확인
 ```bash
 # Redis Commander 웹 인터페이스에서 확인
 # http://localhost:8081 접속
@@ -572,16 +1303,10 @@ docker-compose exec minio-init mc ls minio/content-loader-summary-cache
 # 명령줄에서 확인
 docker-compose exec redis redis-cli
 > KEYS summary:*
-> GET summary:abcd:1234567890abcdef...
-```
+> GET summary:1234567890abcdef
 
-##### 3. 캐시 히트율 모니터링
-```bash
-# Redis 통계 확인
+# 캐시 통계 확인
 docker-compose exec redis redis-cli INFO stats
-
-# 캐시 히트율 계산
-# keyspace_hits / (keyspace_hits + keyspace_misses)
 ```
 
 #### 환경 변수 설정 (.env 파일)
@@ -611,12 +1336,9 @@ CONFLUENCE_API_TOKEN=your-confluence-token
 GITHUB_APP_ID=your-github-app-id
 GITHUB_PRIVATE_KEY_PATH=/app/secrets/github-private-key.pem
 
-# 로컬 개발 설정 (Docker Compose에서 자동 설정)
-# S3_ENDPOINT=http://minio:9000
-# AWS_ACCESS_KEY_ID=minio
-# AWS_SECRET_ACCESS_KEY=miniominio
-# REDIS_HOST=redis
-# REDIS_PORT=6379
+# Redis 캐싱 설정
+REDIS_HOST=redis
+REDIS_PORT=6379
 ```
 
 #### 개발 워크플로우
@@ -655,9 +1377,6 @@ async def test():
 
 asyncio.run(test())
 "
-
-# 두 번째 요약 실행 (캐시 히트)
-# 동일한 코드를 다시 실행하면 캐시에서 빠르게 반환됨
 ```
 
 ##### 3. 캐시 무효화 테스트
@@ -666,22 +1385,7 @@ asyncio.run(test())
 docker-compose exec redis redis-cli FLUSHDB
 
 # 특정 키 삭제
-docker-compose exec redis redis-cli DEL "summary:abcd:1234567890abcdef..."
-
-# MinIO 캐시 삭제
-docker-compose exec minio-init mc rm --recursive minio/content-loader-summary-cache
-```
-
-##### 4. 성능 모니터링
-```bash
-# 실시간 Redis 모니터링
-docker-compose exec redis redis-cli MONITOR
-
-# 메모리 사용량 확인
-docker-compose exec redis redis-cli MEMORY USAGE summary:abcd:1234567890abcdef...
-
-# MinIO 스토리지 사용량 확인
-docker-compose exec minio-init mc du minio/content-loader-summary-cache
+docker-compose exec redis redis-cli DEL "summary:1234567890abcdef"
 ```
 
 #### 개발 환경 리셋
@@ -690,10 +1394,8 @@ docker-compose exec minio-init mc du minio/content-loader-summary-cache
 docker-compose down -v
 docker-compose up -d
 
-# 캐시만 초기화
+# Redis 캐시만 초기화
 docker-compose exec redis redis-cli FLUSHALL
-docker-compose exec minio-init mc rm --recursive --force minio/content-loader-summary-cache
-docker-compose exec minio-init mc rm --recursive --force minio/content-loader-metadata-cache
 ```
 
 ## 4. 종류별 독립 실행 방법
@@ -843,129 +1545,29 @@ scheduler:
 | GitHub     | 높음 (개발 활동) | 높음 (코드/이슈) | 높음 | 하루 2회 |
 | Confluence | 낮음-중간 (문서) | 중간 (정책/문서) | 중간 | 하루 1회 |
 
-### 4.2 스케줄링 전략 옵션
+### 4.2 간단한 cron 기반 스케줄링
 
-#### Option 1: 차등 스케줄링 (권장)
 ```yaml
-# 데이터 특성별 차등 적용
-slack:
-  schedule: "0 9,14,18 * * *"    # 하루 3회 (9시, 14시, 18시)
-  priority: high
-
-github:
-  schedule: "0 8,20 * * *"       # 하루 2회 (8시, 20시)
-  priority: high
-
-confluence:
-  schedule: "0 10 * * *"         # 하루 1회 (10시)
-  priority: medium
-```
-
-#### Option 2: 통합 실행
-```yaml
-# 모든 소스 동시 실행 (리소스 집약적)
-content-loader:
-  schedule: "0 9,18 * * *"       # 하루 2회
-  sources: ["slack", "github", "confluence"]
-```
-
-#### Option 3: 증분 업데이트 기반
-```yaml
-# 변경 감지 후 실행 (고급)
-content-loader:
-  schedule: "*/30 * * * *"       # 30분마다 변경 체크
-  mode: incremental              # 변경된 데이터만 처리
-  change_detection: true
-```
-
-### 4.3 단계별 도입 계획
-
-#### Phase 1: 기본 차등 스케줄링
-```yaml
-# 초기 배포 시 안전한 설정
+# config/scheduler.yaml - 단순한 cron 기반 설정
 scheduler:
-  strategy: "differential"
-  sources:
-    slack:
-      schedule: "0 9,18 * * *"   # 하루 2회로 시작
-    github:
-      schedule: "0 8,20 * * *"   # 하루 2회
-    confluence:
-      schedule: "0 10 * * *"     # 하루 1회
+  slack:
+    schedule: "0 9,14,18 * * *"    # 하루 3회
+    timeout: 30m
+
+  github:
+    schedule: "0 8,20 * * *"       # 하루 2회
+    timeout: 60m
+
+  confluence:
+    schedule: "0 10 * * *"         # 하루 1회
+    timeout: 20m
 ```
 
-#### Phase 2: 최적화 (모니터링 후 조정)
-```yaml
-# 사용 패턴 분석 후 최적화
-scheduler:
-  strategy: "optimized"
-  sources:
-    slack:
-      schedule: "0 9,14,18 * * *"  # 3회로 증가
-      incremental: true            # 증분 업데이트 활성화
-    github:
-      schedule: "0 8,20 * * *"     # 유지
-      batch_size: 100              # 배치 크기 최적화
-    confluence:
-      schedule: "0 10 * * *"       # 유지
-```
+### 4.3 스케줄링 고려사항
 
-#### Phase 3: 지능형 스케줄링
-```yaml
-# AI 기반 최적화 (향후)
-scheduler:
-  strategy: "intelligent"
-  auto_adjust: true
-  metrics_based: true
-  peak_hours: ["9-11", "14-16", "18-20"]
-```
-
-### 4.4 스케줄링 고려사항
-
-#### 리소스 최적화
-- **CPU/메모리**: 대용량 소스코드 인덱싱 시간대 분산
-- **네트워크**: API Rate Limit 준수 (GitHub: 5000/hour)
-- **저장소**: 벡터 DB 쓰기 성능 고려
-
-#### 비즈니스 요구사항
+- **API Rate Limit**: GitHub (5000/hour), Slack (50+ calls/min) 준수
+- **실행 시간**: 소스코드 인덱싱 등 긴 처리 시간 고려
 - **업무 시간**: 오전 9시-오후 6시 집중 업데이트
-- **사용자 패턴**: 검색 빈도가 높은 시간대 고려
-- **장애 대응**: 실패 시 재시도 전략
-
-#### 모니터링 지표
-```python
-# 스케줄링 성능 메트릭
-class SchedulingMetrics:
-    execution_duration: Dict[str, float]    # 소스별 실행 시간
-    success_rate: Dict[str, float]          # 소스별 성공률
-    data_freshness: Dict[str, datetime]     # 데이터 신선도
-    resource_usage: Dict[str, ResourceUsage] # 리소스 사용량
-```
-
-### 4.5 환경별 스케줄링
-
-#### 개발 환경
-```yaml
-# 개발/테스트용 - 리소스 절약
-dev:
-  slack:
-    schedule: "0 10 * * *"       # 하루 1회
-  github:
-    schedule: "0 11 * * *"       # 하루 1회
-  confluence:
-    schedule: "0 12 * * 0"       # 주 1회
-```
-
-#### 프로덕션 환경
-```yaml
-# 프로덕션 - 최적 성능
-prod:
-  slack:
-    schedule: "0 9,14,18 * * *"  # 하루 3회
-  github:
-    schedule: "0 8,20 * * *"     # 하루 2회
-  confluence:
-    schedule: "0 10 * * *"       # 하루 1회
-```
+- **모니터링**: 각 실행의 성공률과 성능 지표 추적
 
 이 설계를 통해 기존의 분산된 loader들을 통합하면서도 각각의 특성을 유지하고, 데이터 신선도와 시스템 성능을 균형있게 최적화하는 확장 가능한 아키텍처를 구현할 수 있습니다.

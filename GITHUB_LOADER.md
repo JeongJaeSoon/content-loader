@@ -46,6 +46,7 @@ class GitHubOptions:
     extensions: List[str] = field(default_factory=lambda: [".md"])
     ignore_document_ids: List[str] = field(default_factory=list)
     state: str = "all"  # open, closed, all
+    incremental: bool = True  # 증분 업데이트 사용
 
     # 소스코드 인덱싱 옵션
     preset: Optional[str] = None  # python, javascript, java, full_stack
@@ -59,13 +60,12 @@ class GitHubOptions:
     exclude_credentials: bool = True
     security_exclude_patterns: List[str] = field(default_factory=lambda: ["**/.env*", "**/secrets/**"])
 
-    # 청킹 설정
-    chunking_strategy: str = "semantic"  # semantic, fixed_size, function_based
+    # 청킹 설정 (코드 전용)
+    chunking_strategy: str = "function_based"  # function_based, semantic, fixed_size
     chunk_size: int = 1024
-    chunk_overlap: int = 100
-    preserve_context: bool = True
+    chunk_overlap: int = 200
     include_docstrings: bool = True
-    include_comments: bool = False
+    include_comments: bool = True
 ```
 
 ## API 연동
@@ -109,15 +109,18 @@ GITHUB_CODE_PRESETS = {
     "javascript": {
         "include_patterns": ["**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx"],
         "exclude_patterns": ["**/node_modules/**", "**/dist/**", "**/build/**"],
-        "chunking_strategy": "semantic",
-        "preserve_context": True,
+        "chunking_strategy": "function_based",
+        "include_docstrings": True,
+        "include_comments": True,
         "security_exclude_patterns": ["**/.env*", "**/secrets/**", "**/*.min.js"]
     },
     "full_stack": {
         "include_patterns": ["**/*.py", "**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.md", "**/*.yml"],
         "exclude_patterns": ["**/node_modules/**", "**/__pycache__/**", "**/venv/**", "**/dist/**", "**/build/**"],
-        "chunking_strategy": "semantic",
+        "chunking_strategy": "function_based",
         "max_file_size_kb": 300,
+        "include_docstrings": True,
+        "include_comments": True,
         "security_exclude_patterns": ["**/.env*", "**/secrets/**", "**/*_secret*", "**/*_key*"]
     }
 }
@@ -157,7 +160,7 @@ class GitHubSourceCodeProcessor:
 
     async def _chunk_source_file(self, file: GitHubFile, source: GitHubSource) -> AsyncGenerator[Document, None]:
         """소스코드 파일을 적절한 단위로 청킹"""
-        strategy = self.options.chunking_strategy or self.preset.get("chunking_strategy", "semantic")
+        strategy = self.options.chunking_strategy or self.preset.get("chunking_strategy", "function_based")
 
         if strategy == "function_based":
             # 함수/클래스 단위로 청킹
@@ -295,7 +298,118 @@ github:
 - **다양한 소스**: Issues, Files, Source Code 지원
 - **프리셋 시스템**: 언어별 최적화된 설정
 - **보안 필터링**: 민감한 파일 자동 제외
-- **청킹 전략**: 함수/의미/크기 기반 선택 가능
+- **청킹 전략**: 함수 기반 코드 청킹
 - **GraphQL 지원**: 복잡한 쿼리 최적화
 - **파일 추적**: SHA 기반 변경 감지
+- **에러 처리**: Rate Limit 및 네트워크 오류 대응
 - **대용량 처리**: 소스코드 인덱싱을 위한 최적화
+- **증분 업데이트**: SHA 기반 파일 변경 감지
+
+## 증분 업데이트 전략
+```python
+class GitHubLoader(BaseLoader):
+    async def load_source(self, source: GitHubSource) -> AsyncGenerator[Document, None]:
+        if source.type == "issues":
+            await self._load_issues_incremental(source)
+        elif source.type == "source_code":
+            await self._load_source_code_incremental(source)
+
+    async def _load_issues_incremental(self, source: GitHubSource):
+        """이슈 증분 로딩"""
+        # 마지막 수집 시간 조회
+        since = None
+        if source.options.incremental:
+            since = await self._get_last_fetch_time(f"{source.key}:issues")
+
+        issues = await self.client.get_issues(
+            source.owner,
+            source.name,
+            since=since
+        )
+
+        latest_updated = None
+        for issue in issues:
+            if not latest_updated or issue.updated_at > latest_updated:
+                latest_updated = issue.updated_at
+            yield self._issue_to_document(issue, source)
+
+        # 마지막 수집 시간 업데이트
+        if latest_updated:
+            await self._update_last_fetch_time(f"{source.key}:issues", latest_updated)
+
+    async def _load_source_code_incremental(self, source: GitHubSource):
+        """소스코드 증분 로딩 (SHA 기반)"""
+        files = await self.client.get_source_files(
+            source.owner,
+            source.name,
+            source.options
+        )
+
+        for file in files:
+            if not self._should_include_source_file(file, source.options):
+                continue
+
+            # SHA 기반 변경 감지
+            stored_sha = await self._get_stored_file_sha(f"{source.key}:{file.path}")
+            if stored_sha == file.sha:
+                continue  # 변경되지 않은 파일 스킵
+
+            # 파일 처리 및 SHA 업데이트
+            async for chunk_doc in self._chunk_source_file(file, source):
+                yield chunk_doc
+
+            await self._update_stored_file_sha(f"{source.key}:{file.path}", file.sha)
+
+    async def _get_stored_file_sha(self, file_key: str) -> Optional[str]:
+        """저장된 파일 SHA 조회"""
+        return await self.cache_client.get(f"file_sha:{file_key}")
+
+    async def _update_stored_file_sha(self, file_key: str, sha: str):
+        """파일 SHA 업데이트"""
+        await self.cache_client.set(
+            f"file_sha:{file_key}",
+            sha,
+            expire=86400*30  # 30일 보관
+        )
+```
+
+## 에러 처리 전략
+```python
+class GitHubLoader(BaseLoader):
+    async def load_source(self, source: GitHubSource) -> AsyncGenerator[Document, None]:
+        retry_count = 0
+        max_retries = 3
+
+        while retry_count <= max_retries:
+            try:
+                if source.type == "issues":
+                    async for issue in self.client.get_issues(source.owner, source.name):
+                        yield self._issue_to_document(issue, source)
+                elif source.type == "source_code":
+                    async for file in self.client.get_source_files(source.owner, source.name, source.options):
+                        if self._should_include_source_file(file, source.options):
+                            async for chunk_doc in self._chunk_source_file(file, source):
+                                yield chunk_doc
+                break
+
+            except GitHubRateLimitError as e:
+                # Rate Limit 예외 처리
+                reset_time = e.reset_time
+                wait_time = min(reset_time - time.time(), 3600)  # 최대 1시간
+                logger.warning(f"GitHub rate limit exceeded. Waiting {wait_time}s")
+                await asyncio.sleep(wait_time)
+                continue
+
+            except GitHubAuthError:
+                # 인증 오류는 재시도하지 않음
+                raise
+
+            except Exception as e:
+                if retry_count < max_retries:
+                    retry_count += 1
+                    wait_time = min(60, 5 * (2 ** retry_count))  # 최대 60초
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    raise
+```

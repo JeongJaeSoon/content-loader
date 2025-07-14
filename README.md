@@ -377,7 +377,7 @@ sources:
       exclude_patterns:
         - "src/**/*.test.ts"
         - "src/**/*.spec.ts"
-      chunking_strategy: "semantic"
+      chunking_strategy: "function_based"
 
   - key: "fullstack-monorepo"
     owner: "company"
@@ -455,8 +455,8 @@ github_code_presets:
       - "**/dist/**"
       - "**/build/**"
       - "**/.pytest_cache/**"
-    chunking_strategy: "semantic"
-    max_file_size_kb: 200
+    chunking_strategy: "function_based"
+    max_file_size_kb: 300
     security_exclude_patterns:
       - "**/.env*"
       - "**/secrets/**"
@@ -468,8 +468,8 @@ github_code_presets:
 ### settings.yaml
 ```yaml
 chunking:
-  default_size: 512
-  overlap: 50
+  default_size: 1024
+  overlap: 100
 
 summarization:
   enabled: true
@@ -504,54 +504,30 @@ retry:
 
 ## 실행 빈도 및 스케줄링
 
-### 권장 스케줄링 설정
+### 간단한 스케줄링 설정
 
-각 데이터 소스의 특성에 맞는 차등 스케줄링을 권장합니다:
+환경변수로 제어하는 단순한 스케줄링:
 
-```yaml
-# config/scheduler.yaml
-scheduler:
-  strategy: "differential"
+```bash
+# 환경변수 예시
+ENV=production  # development, production
 
-  # 프로덕션 환경
-  production:
-    slack:
-      schedule: "0 9,14,18 * * *"  # 하루 3회 (오전9시, 오후2시, 오후6시)
-      priority: high
-      timeout: 30m
+# 프로덕션 스케줄
+SLACK_SCHEDULE="0 9,14,18 * * *"    # 하루 3회
+GITHUB_SCHEDULE="0 8,20 * * *"      # 하루 2회
+CONFLUENCE_SCHEDULE="0 10 * * *"    # 하루 1회
 
-    github:
-      schedule: "0 8,20 * * *"     # 하루 2회 (오전8시, 오후8시)
-      priority: high
-      timeout: 60m                 # 소스코드 인덱싱 고려
-
-    confluence:
-      schedule: "0 10 * * *"       # 하루 1회 (오전10시)
-      priority: medium
-      timeout: 20m
-
-  # 개발 환경 (리소스 절약)
-  development:
-    slack:
-      schedule: "0 10 * * *"       # 하루 1회
-    github:
-      schedule: "0 11 * * *"       # 하루 1회
-    confluence:
-      schedule: "0 12 * * 0"       # 주 1회 (일요일)
+# 개발 스케줄 (추가 설정)
+# SLACK_SCHEDULE="0 10 * * *"
+# GITHUB_SCHEDULE="0 11 * * *"
+# CONFLUENCE_SCHEDULE="0 12 * * 0"
 ```
 
-### 단계별 도입 계획
-
-1. **Phase 1**: 기본 차등 스케줄링 (하루 1-2회)
-2. **Phase 2**: 사용 패턴 분석 후 최적화
-3. **Phase 3**: 증분 업데이트 및 지능형 스케줄링
-
-### 모니터링 지표
+### 모니터링 기본 지표
 
 - 실행 시간 및 성공률
-- 데이터 신선도
 - API Rate Limit 사용량
-- 시스템 리소스 사용률
+- Redis 캐시 히트율
 
 ## 향후 확장 계획
 

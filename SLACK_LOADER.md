@@ -32,6 +32,7 @@ class SlackOptions:
     exclude_bots: bool = True
     date_from: Optional[datetime] = None
     date_to: Optional[datetime] = None
+    incremental: bool = True  # 증분 업데이트 사용
 ```
 
 ## API 연동
@@ -143,5 +144,87 @@ slack:
 - **Thread 처리**: 스레드 메시지 포함/제외 옵션
 - **Bot 필터링**: 봇 메시지 자동 제외
 - **날짜 범위**: 특정 기간 메시지만 수집
-- **재시도 로직**: 네트워크 오류 시 자동 재시도
+- **에러 처리**: 지수 백오프로 3회 재시도
 - **실시간성**: 최신 대화 내용 신속 반영
+- **증분 업데이트**: 마지막 수집 시간 이후 메시지만 처리
+
+## 증분 업데이트 전략
+```python
+class SlackLoader(BaseLoader):
+    async def load_source(self, source: SlackSource) -> AsyncGenerator[Document, None]:
+        # 마지막 수집 시간 조회
+        last_fetch_time = await self._get_last_fetch_time(source.key)
+
+        # 증분 업데이트 옵션이 활성화된 경우
+        if source.options.incremental and last_fetch_time:
+            # 마지막 수집 이후 메시지만 처리
+            messages = await self.client.get_channel_messages(
+                channel=source.channel,
+                oldest=last_fetch_time.timestamp()
+            )
+        else:
+            # 전체 메시지 처리
+            messages = await self.client.get_channel_messages(
+                channel=source.channel,
+                options=source.options
+            )
+
+        for message in messages:
+            if self._should_include_message(message):
+                yield self._message_to_document(message, source)
+
+        # 수집 시간 업데이트
+        await self._update_last_fetch_time(source.key, datetime.now())
+
+    async def _get_last_fetch_time(self, source_key: str) -> Optional[datetime]:
+        """마지막 수집 시간 조회"""
+        timestamp = await self.cache_client.get(f"last_fetch:{source_key}")
+        return datetime.fromtimestamp(float(timestamp)) if timestamp else None
+
+    async def _update_last_fetch_time(self, source_key: str, fetch_time: datetime):
+        """마지막 수집 시간 업데이트"""
+        await self.cache_client.set(
+            f"last_fetch:{source_key}",
+            str(fetch_time.timestamp()),
+            expire=86400*30  # 30일 보관
+        )
+```
+
+## 에러 처리 전략
+```python
+class SlackLoader(BaseLoader):
+    async def load_source(self, source: SlackSource) -> AsyncGenerator[Document, None]:
+        retry_count = 0
+        max_retries = 3
+
+        while retry_count <= max_retries:
+            try:
+                messages = await self.client.get_channel_messages(
+                    channel=source.channel,
+                    options=source.options
+                )
+
+                for message in messages:
+                    if self._should_include_message(message):
+                        yield self._message_to_document(message, source)
+                break
+
+            except SlackAPIError as e:
+                if e.response['error'] == 'rate_limited':
+                    retry_after = int(e.response.headers.get('Retry-After', 60))
+                    await asyncio.sleep(retry_after)
+                    continue
+                elif retry_count < max_retries:
+                    retry_count += 1
+                    await asyncio.sleep(2 ** retry_count)
+                    continue
+                else:
+                    raise
+            except Exception as e:
+                if retry_count < max_retries:
+                    retry_count += 1
+                    await asyncio.sleep(2 ** retry_count)
+                    continue
+                else:
+                    raise
+```
