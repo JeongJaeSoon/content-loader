@@ -1,12 +1,14 @@
 # Confluence Loader 상세 설계
 
 ## 주요 기능
+
 - Confluence Cloud API를 통한 페이지 및 댓글 수집
 - CQL(Confluence Query Language) 기반 검색
 - 페이지 계층 구조 처리
 - 첨부파일 메타데이터 수집
 
 ## 데이터 모델
+
 ```python
 @dataclass
 class ConfluencePage:
@@ -37,6 +39,7 @@ class ConfluenceOptions:
 ```
 
 ## API 연동 (Cloud 기준)
+
 - **Confluence Cloud REST API** 사용
 - 인증: Email + API Token
 - `GET /wiki/rest/api/content` - 페이지 조회
@@ -44,6 +47,7 @@ class ConfluenceOptions:
 - CQL을 통한 고급 검색
 
 ## 주요 개선점
+
 ```python
 class ConfluenceCloudClient:
     def __init__(self, base_url: str, email: str, api_token: str):
@@ -63,6 +67,7 @@ class ConfluenceCloudClient:
 ## 테스트 방법
 
 ### 개별 테스트
+
 ```python
 # scripts/test_confluence.py
 import asyncio
@@ -102,6 +107,7 @@ if __name__ == "__main__":
 ```
 
 ### 설정 예시
+
 ```yaml
 # config/loader.yaml
 sources:
@@ -121,6 +127,7 @@ sources:
 ```
 
 ## CQL 쿼리 예시
+
 ```python
 # 최근 수정된 페이지 검색
 cql = "space = ENG AND type = page AND lastModified > '2024-01-01'"
@@ -140,10 +147,12 @@ cql = "space = ENG AND creator = 'john.doe@company.com'"
 Confluence는 문서 관리 시스템 특성상 상대적으로 낮은 실행 빈도가 적절합니다:
 
 ### 권장 스케줄
+
 - **프로덕션**: 하루 1회 (오전 10시)
 - **개발환경**: 주 1회 (일요일 오후 12시)
 
 ### 스케줄링 고려사항
+
 - **문서 업데이트 패턴**: 일반적으로 일괄 업데이트 또는 주기적 업데이트
 - **API 성능**: Confluence Cloud API는 상대적으로 느림
 - **증분 업데이트**: `modified_since` 옵션으로 효율적 처리 가능
@@ -159,6 +168,7 @@ confluence:
 ```
 
 ## 주요 특징
+
 - **CQL 지원**: 복잡한 검색 조건 설정 가능
 - **계층 구조**: 페이지 부모-자식 관계 유지
 - **댓글 처리**: 페이지 댓글 포함/제외 옵션
@@ -168,6 +178,7 @@ confluence:
 - **Cloud 최적화**: Confluence Cloud API 특성에 맞춘 설계
 
 ## 증분 업데이트 전략
+
 ```python
 class ConfluenceLoader(BaseLoader):
     async def load_source(self, source: ConfluenceSource) -> AsyncGenerator[Document, None]:
@@ -216,6 +227,7 @@ class ConfluenceLoader(BaseLoader):
 ```
 
 ## 에러 처리 전략
+
 ```python
 class ConfluenceLoader(BaseLoader):
     async def load_source(self, source: ConfluenceSource) -> AsyncGenerator[Document, None]:

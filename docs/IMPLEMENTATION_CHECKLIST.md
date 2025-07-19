@@ -5,6 +5,7 @@
 ### 📋 환경 설정 및 키 발급
 
 #### Slack 설정
+
 - [ ] **Slack App 생성**
   - [ ] https://api.slack.com/apps 에서 새 앱 생성
   - [ ] OAuth & Permissions에서 Bot Token Scopes 설정
@@ -20,6 +21,7 @@
   - [ ] 워크스페이스 ID 수집 (T로 시작하는 ID)
 
 #### Confluence 설정 (Cloud)
+
 - [ ] **API Token 발급**
   - [ ] https://id.atlassian.com/manage-profile/security/api-tokens 접속
   - [ ] 새 API Token 생성
@@ -30,22 +32,25 @@
   - [ ] Confluence URL 확인 (예: https://company.atlassian.net)
 
 #### GitHub 설정
-- [ ] **GitHub App 생성**
-  - [ ] Organization Settings > Developer settings > GitHub Apps
-  - [ ] 새 GitHub App 생성
-  - [ ] Repository permissions 설정:
-    - [ ] Contents: Read
-    - [ ] Issues: Read
-    - [ ] Metadata: Read
-    - [ ] Pull requests: Read (필요시)
-  - [ ] Private key 생성 및 다운로드
-  - [ ] App ID 확인
-- [ ] **Installation 설정**
-  - [ ] 대상 Organization/Repository에 앱 설치
-  - [ ] Installation ID 확인
-  - [ ] 접근 권한 확인
+
+- [x] **GitHub App 생성**
+  - [x] Organization Settings > Developer settings > GitHub Apps
+  - [x] 새 GitHub App 생성
+  - [x] Repository permissions 설정:
+    - [x] Contents: Read
+    - [x] Issues: Read
+    - [x] Metadata: Read
+    - [x] Pull requests: Read (필요시)
+  - [x] Private key 생성 및 다운로드
+  - [x] App ID 확인: **1605315**
+- [x] **Installation 설정**
+  - [x] 대상 Organization/Repository에 앱 설치
+  - [x] Installation ID 확인: **75850355**
+  - [x] 접근 권한 확인
+  - [x] Private Key 파일: **2p3s-git-data-loader.2025-07-14.private-key.pem**
 
 #### 사내 LLM Proxy 설정
+
 - [ ] **사내 프록시 정보 수집**
   - [ ] Base URL 확인
   - [ ] API Key 형식 확인
@@ -53,12 +58,14 @@
   - [ ] Rate Limit 정책 확인
 
 #### 임베딩 서비스 설정
+
 - [ ] **Embedding Service 정보**
   - [ ] Service URL 확인
   - [ ] API 스키마 확인
   - [ ] 인증 방식 확인
 
 #### Redis 설정 (캐싱용)
+
 - [ ] **Redis 인스턴스**
   - [ ] Redis 인스턴스 설정 (로컬 개발용)
   - [ ] 연결 정보 확인 (host, port, password)
@@ -71,6 +78,7 @@
 ### 🏗️ 개발 환경 설정
 
 #### 기본 도구 설치
+
 - [ ] **Python 환경**
   - [ ] Python 3.11+ 설치
   - [ ] uv 설치: `curl -LsSf https://astral.sh/uv/install.sh | sh`
@@ -81,6 +89,7 @@
   - [ ] Tilt 설치 (선택사항): `curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash`
 
 #### 환경 변수 설정
+
 - [ ] **환경 변수 파일 생성**
   - [ ] `.env` 파일 생성
   - [ ] 모든 필수 환경 변수 설정
@@ -93,6 +102,7 @@
 ### 1️⃣ **High Priority - 핵심 구현**
 
 #### [ ] 프로젝트 기본 구조 설정
+
 - [ ] `uv init content-loader` 실행
 - [ ] `pyproject.toml` 설정
   - [ ] Python 버전 지정 (>=3.11)
@@ -107,6 +117,7 @@
 - [ ] `README.md` 초기 작성
 
 #### [ ] Core Layer 구현
+
 - [ ] **BaseLoader 인터페이스**
   - [ ] `src/content_loader/core/base.py` 생성
   - [ ] `load_source()` 추상 메서드 정의
@@ -130,6 +141,7 @@
   - [ ] 커스텀 예외 클래스 정의
 
 #### [ ] Settings 및 Configuration 시스템
+
 - [ ] **Settings 클래스**
   - [ ] `src/content_loader/settings.py` 생성
   - [ ] Pydantic Settings 사용
@@ -141,6 +153,7 @@
   - [ ] 환경별 설정 분리 (dev, staging, prod)
 
 #### [ ] Service Layer 구현
+
 - [ ] **EmbeddingService**
   - [ ] `src/content_loader/services/embedding.py` 생성
   - [ ] `upsert_documents()` 메서드 구현
@@ -163,6 +176,7 @@
   - [ ] Rate limiting 처리
 
 #### [ ] Slack Loader 구현
+
 - [ ] **SlackClient**
   - [ ] `src/content_loader/loaders/slack/client.py` 생성
   - [ ] Slack Web API 연동
@@ -179,6 +193,7 @@
   - [ ] `SlackMessage`, `SlackSource`, `SlackOptions` 정의
 
 #### [ ] Confluence Loader 구현
+
 - [ ] **ConfluenceClient (Cloud)**
   - [ ] `src/content_loader/loaders/confluence/client.py` 생성
   - [ ] Confluence Cloud REST API 연동
@@ -196,6 +211,7 @@
   - [ ] `ConfluencePage`, `ConfluenceSource`, `ConfluenceOptions` 정의
 
 #### [ ] GitHub Loader 구현
+
 - [ ] **GitHubClient (App 인증)**
   - [ ] `src/content_loader/loaders/github/client.py` 생성
   - [ ] GitHub App 인증 구현
@@ -216,6 +232,7 @@
 ### 2️⃣ **Medium Priority - 확장 기능**
 
 #### [ ] GitHub 소스코드 인덱싱 프리셋 시스템
+
 - [ ] **프리셋 정의**
   - [ ] Python 프리셋 (*.py, 함수 기반 청킹)
   - [ ] JavaScript 프리셋 (*.js, *.ts, 의미 기반 청킹)
@@ -226,6 +243,7 @@
   - [ ] 커스텀 설정 오버라이드 지원
 
 #### [ ] 소스코드 청킹 전략 구현 (GitHub 전용)
+
 - [ ] **Function-based 청킹**
   - [ ] AST 파싱을 통한 함수/클래스 추출
   - [ ] 언어별 파서 구현
@@ -236,6 +254,7 @@
   - [ ] 문맥 보존 로직
 
 #### [ ] 보안 필터링 시스템
+
 - [ ] **민감 파일 검사**
   - [ ] 환경 변수 파일 (*.env*) 제외
   - [ ] 시크릿 파일 패턴 검사
@@ -249,6 +268,7 @@
   - [ ] 예외 처리 로직
 
 #### [ ] Utils 모듈 구현
+
 - [ ] **Retry 유틸리티**
   - [ ] `src/content_loader/utils/retry.py` 생성
   - [ ] 지수 백오프 구현
@@ -264,6 +284,7 @@
   - [ ] 로그 회전 설정
 
 #### [ ] 설정 파일 구조 구현
+
 - [ ] **slack.yaml**
   - [ ] 채널별 설정
   - [ ] 옵션 설정 (replies, bots, date_range)
@@ -280,6 +301,7 @@
   - [ ] 공통 설정 (chunking, embedding, retry)
 
 #### [ ] Main 애플리케이션 구현
+
 - [ ] **ContentLoaderApp**
   - [ ] `src/content_loader/main.py` 생성
   - [ ] 메인 애플리케이션 클래스
@@ -296,6 +318,7 @@
   - [ ] 독립 실행 모드
 
 #### [ ] 개별 Loader 테스트 스크립트
+
 - [ ] **test_slack.py**
   - [ ] `scripts/test_slack.py` 생성
   - [ ] Slack 로더 단독 테스트
@@ -313,6 +336,7 @@
   - [ ] 디버깅 및 검증 용도
 
 #### [ ] 통합 테스트 구현
+
 - [ ] **단위 테스트**
   - [ ] `tests/unit/` 디렉터리 생성
   - [ ] 각 클래스별 단위 테스트
@@ -327,6 +351,7 @@
   - [ ] 테스트 설정 분리
 
 #### [ ] Docker 설정 구현
+
 - [ ] **Dockerfile**
   - [ ] 멀티스테이지 빌드
   - [ ] uv 기반 의존성 설치
@@ -343,6 +368,7 @@
 ### 3️⃣ **Low Priority - 운영 최적화**
 
 #### [ ] 누락된 기능 추가 (설계 재검토 반영)
+
 - [ ] **로깅 및 모니터링 시스템**
   - [ ] 구조화된 로깅 (structlog, JSON)
   - [ ] 성능 메트릭 수집기 구현
@@ -371,6 +397,7 @@
   - [ ] 인증 오류 처리
 
 #### [ ] Tiltfile 구현
+
 - [ ] **개발 환경 자동화**
   - [ ] 로컬 개발 서버 자동 시작
   - [ ] 파일 변경 감지 및 재시작
@@ -380,6 +407,7 @@
   - [ ] 헬스 체크 구현
 
 #### [ ] 간단한 cron 기반 스케줄링 구현
+
 - [ ] **기본 스케줄링**
   - [ ] Slack: 하루 3회 (9,14,18시)
   - [ ] GitHub: 하루 2회 (8,20시)
@@ -389,6 +417,7 @@
   - [ ] 각 소스별 SCHEDULE 변수 설정
 
 #### [ ] 모니터링 및 메트릭 시스템
+
 - [ ] **성능 메트릭**
   - [ ] 실행 시간 추적
   - [ ] 메모리 사용량 모니터링
@@ -403,6 +432,7 @@
   - [ ] 일일 보고서 생성
 
 #### [ ] 문서화
+
 - [ ] **API 문서**
   - [ ] OpenAPI 스키마 생성
   - [ ] API 엔드포인트 문서화
@@ -420,6 +450,7 @@
 ## 🎯 완료 기준
 
 ### 기능 완료 기준
+
 - [ ] 모든 3개 loader(Slack, Confluence, GitHub)가 정상 동작
 - [ ] 개별 테스트 스크립트로 각 loader 검증 완료
 - [ ] 전체 파이프라인 테스트 통과
@@ -430,18 +461,21 @@
 - [ ] Redis 캐싱 동작 확인
 
 ### 성능 완료 기준
+
 - [ ] Slack: 1000개 메시지 처리 시간 < 5분
 - [ ] Confluence: 100개 페이지 처리 시간 < 10분
 - [ ] GitHub: 50개 이슈 + 파일 처리 시간 < 15분
 - [ ] 소스코드 인덱싱: 1MB 코드 처리 시간 < 30분
 
 ### 보안 완료 기준
+
 - [ ] 민감 파일 자동 제외 동작 확인
 - [ ] 환경 변수 및 시크릿 보호 확인
 - [ ] API 키 노출 방지 확인
 - [ ] 보안 패턴 검사 동작 확인
 
 ### 운영 완료 기준
+
 - [ ] 구조화된 로깅 및 메트릭 수집 동작
 - [ ] 에러 처리 및 재시도 로직 검증
 - [ ] 간단한 cron 기반 스케줄링 동작 확인

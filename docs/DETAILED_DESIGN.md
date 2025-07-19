@@ -108,6 +108,7 @@ class LoaderExecutor:
 ### 2.3 Service Layer 설계
 
 #### EmbeddingService
+
 ```python
 class EmbeddingService:
     def __init__(self, service_url: str):
@@ -134,6 +135,7 @@ class EmbeddingService:
 ```
 
 #### SummarizerService
+
 ```python
 class SummarizerService:
     def __init__(self, llm_settings: LLMSettings, cache_client: CacheClient):
@@ -156,6 +158,7 @@ class SummarizerService:
 ```
 
 #### CacheClient (Redis 기반)
+
 ```python
 class CacheClient:
     def __init__(self, redis_client: RedisClient):
@@ -177,6 +180,7 @@ class CacheClient:
 ```
 
 #### LLMClient (사내 Proxy 및 OpenAI 지원)
+
 ```python
 class LLMSettings:
     """LLM 서비스 설정"""
@@ -302,6 +306,7 @@ class LoaderExecutor:
 ```
 
 ### 메트릭 수집
+
 ```python
 from dataclasses import dataclass
 from typing import Dict, Optional
@@ -395,6 +400,7 @@ class MetricsCollector:
 ```
 
 ### 헬스 체크 및 상태 모니터링
+
 ```python
 from fastapi import FastAPI, HTTPException
 from datetime import datetime, timedelta
@@ -476,6 +482,7 @@ async def check_llm_service() -> bool:
 ## 설정 검증 및 오류 처리
 
 ### YAML 스키마 검증
+
 ```python
 from pydantic import BaseModel, ValidationError, validator
 from typing import List, Optional, Literal
@@ -636,6 +643,7 @@ async def validate_startup_configuration():
 ```
 
 ### 런타임 오류 처리
+
 ```python
 class ContentLoaderError(Exception):
     """Base 예외 클래스"""
@@ -693,6 +701,7 @@ async def validation_exception_handler(request, exc):
 ## 성능 최적화 및 메모리 관리
 
 ### 비동기 처리 최적화
+
 ```python
 import asyncio
 from asyncio import Semaphore, Queue
@@ -798,6 +807,7 @@ class PerformanceOptimizedExecutor:
 ```
 
 ### 메모리 관리 전략
+
 ```python
 import gc
 import psutil
@@ -906,6 +916,7 @@ class MemoryAwareLoader(BaseLoader):
 ```
 
 ### 대용량 데이터 처리 전략
+
 ```python
 class LargeDataProcessor:
     def __init__(self, memory_manager: MemoryManager):
@@ -992,7 +1003,6 @@ class LargeDataProcessor:
                 # 메모리 압박 검사
                 if chunk_index % 50 == 0:  # 50개 청크마다
                     await self.memory_manager.manage_memory_pressure()
-```
 
     async def generate_embedding(self, texts: List[str]) -> List[List[float]]:
         model = self._get_model("embedding")
@@ -1009,6 +1019,7 @@ class LargeDataProcessor:
 ### 3.1 개발 환경 설정
 
 #### uv 기반 개발
+
 ```bash
 # 프로젝트 초기화
 uv init content-loader
@@ -1023,6 +1034,7 @@ uv run python -m content_loader.main
 ```
 
 #### Tiltfile 설정
+
 ```python
 # Tiltfile
 docker_build('content-loader', '.')
@@ -1042,6 +1054,7 @@ local_resource(
 ### 3.2 개별 Loader 테스트
 
 #### Slack Loader 테스트
+
 ```python
 # scripts/test_slack.py
 import asyncio
@@ -1080,6 +1093,7 @@ if __name__ == "__main__":
 ```
 
 #### Confluence Loader 테스트
+
 ```python
 # scripts/test_confluence.py
 import asyncio
@@ -1119,6 +1133,7 @@ if __name__ == "__main__":
 ```
 
 #### GitHub Loader 테스트
+
 ```python
 # scripts/test_github.py
 import asyncio
@@ -1174,6 +1189,7 @@ if __name__ == "__main__":
 ### 3.3 통합 테스트
 
 #### Full Pipeline 테스트
+
 ```python
 # scripts/test_full_pipeline.py
 import asyncio
@@ -1205,6 +1221,7 @@ if __name__ == "__main__":
 ### 3.4 Docker 기반 실행
 
 #### docker-compose.yml
+
 ```yaml
 version: '3.8'
 
@@ -1271,6 +1288,7 @@ volumes:
 ```
 
 #### 실행 명령어
+
 ```bash
 # 개발 환경 시작
 docker-compose up -d
@@ -1344,6 +1362,7 @@ REDIS_PORT=6379
 #### 개발 워크플로우
 
 ##### 1. 초기 설정
+
 ```bash
 # 1. 저장소 클론
 git clone <repository-url>
@@ -1361,6 +1380,7 @@ docker-compose logs -f content-loader
 ```
 
 ##### 2. 개발 중 캐시 동작 확인
+
 ```bash
 # 첫 번째 요약 실행 (캐시 미스)
 docker-compose exec content-loader python -c "
@@ -1380,6 +1400,7 @@ asyncio.run(test())
 ```
 
 ##### 3. 캐시 무효화 테스트
+
 ```bash
 # Redis 캐시 초기화
 docker-compose exec redis redis-cli FLUSHDB
@@ -1389,6 +1410,7 @@ docker-compose exec redis redis-cli DEL "summary:1234567890abcdef"
 ```
 
 #### 개발 환경 리셋
+
 ```bash
 # 전체 환경 재시작
 docker-compose down -v
@@ -1405,6 +1427,7 @@ docker-compose exec redis redis-cli FLUSHALL
 각 content-loader를 종류별로 독립적으로 실행하는 다양한 방법을 제공합니다:
 
 #### Option A: 개별 테스트 스크립트
+
 ```bash
 # Slack 단독 실행
 uv run python scripts/test_slack.py
@@ -1417,6 +1440,7 @@ uv run python scripts/test_github.py
 ```
 
 #### Option B: 단일 소스 로드 API
+
 ```python
 # 특정 소스만 실행
 from content_loader.main import ContentLoaderApp
@@ -1428,6 +1452,7 @@ await app.load_single_source(
 ```
 
 #### Option C: 커맨드라인 인자
+
 ```bash
 # 특정 loader 타입만 실행
 uv run python -m content_loader.main --source-type slack
@@ -1436,6 +1461,7 @@ uv run python -m content_loader.main --source-type confluence
 ```
 
 #### Option D: Docker 컨테이너 분리
+
 ```yaml
 # docker-compose.yml
 services:
@@ -1463,6 +1489,7 @@ services:
 ### 4.2 스케줄링 분리 전략
 
 #### 전략 1: 차등 스케줄링 (권장)
+
 ```yaml
 # config/scheduler.yaml
 scheduler:
@@ -1486,6 +1513,7 @@ scheduler:
 ```
 
 #### 전략 2: Kubernetes CronJob 분리
+
 ```yaml
 # k8s/slack-cronjob.yaml
 apiVersion: batch/v1
@@ -1511,6 +1539,7 @@ spec:
 ```
 
 #### 전략 3: 환경별 분리 설정
+
 ```yaml
 # config/environments/dev.yaml
 scheduler:

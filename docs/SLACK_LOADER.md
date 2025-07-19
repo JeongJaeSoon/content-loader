@@ -1,12 +1,14 @@
 # Slack Loader 상세 설계
 
 ## 주요 기능
+
 - Slack 채널의 메시지와 스레드 수집
 - 봇 메시지 필터링
 - 날짜 범위 기반 수집
 - Rate limiting 및 재시도 처리
 
 ## 데이터 모델
+
 ```python
 @dataclass
 class SlackMessage:
@@ -36,12 +38,14 @@ class SlackOptions:
 ```
 
 ## API 연동
+
 - **Slack Web API** 사용
 - `conversations.history` - 채널 메시지 조회
 - `conversations.replies` - 스레드 응답 조회
 - `users.info` - 사용자 정보 조회
 
 ## 구현 예시
+
 ```python
 class SlackLoader(BaseLoader):
     def __init__(self, client: SlackClient):
@@ -61,6 +65,7 @@ class SlackLoader(BaseLoader):
 ## 테스트 방법
 
 ### 개별 테스트
+
 ```python
 # scripts/test_slack.py
 import asyncio
@@ -99,6 +104,7 @@ if __name__ == "__main__":
 ```
 
 ### 설정 예시
+
 ```yaml
 # config/loader.yaml
 sources:
@@ -122,10 +128,12 @@ sources:
 Slack은 실시간 커뮤니케이션 도구 특성상 높은 실행 빈도가 필요합니다:
 
 ### 권장 스케줄
+
 - **프로덕션**: 하루 3회 (오전 9시, 오후 2시, 오후 6시)
 - **개발환경**: 하루 1회 (오전 10시)
 
 ### 스케줄링 고려사항
+
 - **업무시간 집중**: 대부분의 Slack 활동이 업무시간에 발생
 - **Rate Limiting**: Slack API 제한 (Tier 3: 50+ calls/minute)
 - **데이터 볼륨**: 채널 수와 메시지 수에 따라 실행 시간 변동
@@ -140,6 +148,7 @@ slack:
 ```
 
 ## 주요 특징
+
 - **Rate Limiting**: Slack API 제한 준수
 - **Thread 처리**: 스레드 메시지 포함/제외 옵션
 - **Bot 필터링**: 봇 메시지 자동 제외
@@ -149,6 +158,7 @@ slack:
 - **증분 업데이트**: 마지막 수집 시간 이후 메시지만 처리
 
 ## 증분 업데이트 전략
+
 ```python
 class SlackLoader(BaseLoader):
     async def load_source(self, source: SlackSource) -> AsyncGenerator[Document, None]:
@@ -191,6 +201,7 @@ class SlackLoader(BaseLoader):
 ```
 
 ## 에러 처리 전략
+
 ```python
 class SlackLoader(BaseLoader):
     async def load_source(self, source: SlackSource) -> AsyncGenerator[Document, None]:
