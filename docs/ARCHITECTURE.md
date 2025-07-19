@@ -140,7 +140,8 @@ class LoaderExecutor:
             executor.execute(date_range)
         ):
             # 배치 단위로 벡터DB 저장
-            await self._save_documents_batch(batch)
+            # 문서 처리 + 임베딩 + 벡터 저장
+            await self._process_and_store_batch(batch)
 
     async def run_all_loaders(self, date_range: DateRange = None):
         """모든 loader 병렬 실행 (스트리밍)"""
@@ -149,6 +150,18 @@ class LoaderExecutor:
             tasks.append(self.run_single_loader(loader_type, date_range))
 
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _process_and_store_batch(self, documents: List[Document]):
+        """문서 배치 처리 + 벡터 저장"""
+        document_processor = DocumentProcessor()
+        embedding_service = EmbeddingService()
+
+        for document in documents:
+            # 1. 스마트 청킹 + 콘텐츠별 요약
+            processed_chunks = await document_processor.process_document(document)
+
+            # 2. 임베딩 + Qdrant 저장
+            await embedding_service.embed_and_store(processed_chunks, "content_vectors")
 ```
 
 ### **3. Configuration Layer (설정 계층)**
@@ -184,9 +197,11 @@ graph TD
     G --> I
     H --> I
 
-    I --> J[UnifiedChunker]
-    J --> K[EmbeddingService]
-    K --> L[Vector DB]
+    I --> J[DocumentProcessor]
+    J --> K[Smart Chunking]
+    K --> L[Content-aware Summarization]
+    L --> M[EmbeddingService]
+    M --> N[Qdrant Vector DB]
 ```
 
 ## 🛡️ 에러 처리 및 복구
@@ -299,6 +314,262 @@ class SimpleClient:
             ):
                 return response
 ```
+
+## 🧠 문서 처리 및 벡터 저장
+
+### 1. Content-Aware Processing
+
+```python
+class DocumentProcessor:
+    """콘텐츠 타입별 최적화된 문서 처리"""
+
+    def __init__(self):
+        self.content_detector = ContentTypeDetector()
+        self.summarization_strategies = {
+            "source_code": {"should_summarize": False, "chunk_strategy": "function_based"},
+            "documentation": {"should_summarize": True, "chunk_strategy": "semantic"},
+            "conversation": {"should_summarize": True, "chunk_strategy": "thread_based"},
+            "mixed_content": {"should_summarize": True, "chunk_strategy": "adaptive"}
+        }
+
+    async def process_document(self, document: Document) -> List[ProcessedChunk]:
+        """문서 타입에 따른 차별화된 처리"""
+
+        # 1. 콘텐츠 타입 자동 감지
+        content_type = self.content_detector.detect_content_type(document)
+        strategy = self.summarization_strategies[content_type]
+
+        # 2. 타입별 스마트 청킹
+        chunks = await self._smart_chunk(document, strategy["chunk_strategy"])
+
+        processed_chunks = []
+        for chunk in chunks:
+            # 3. 원본 청크 항상 생성 (라인 정보 포함)
+            processed_chunks.append(self._create_chunk(chunk, "original", content_type))
+
+            # 4. 요약 청크 생성 (필요시만)
+            if strategy["should_summarize"] and len(chunk.text) > 500:
+                summary = await self._summarize_chunk(chunk, content_type)
+                processed_chunks.append(self._create_chunk(summary, "summary", content_type))
+
+        return processed_chunks
+
+class ContentTypeDetector:
+    """메타데이터 + 내용 분석으로 콘텐츠 타입 감지"""
+
+    def detect_content_type(self, document: Document) -> str:
+        # GitHub 소스코드 파일 체크
+        if document.metadata.get('source_type') == 'github':
+            file_path = document.metadata.get('file_path', '')
+            if file_path.endswith(('.py', '.js', '.ts', '.java', '.cpp', '.go')):
+                return "source_code"
+            elif file_path.endswith(('.md', '.rst', '.txt')):
+                return "documentation"
+
+        # Slack은 대화형
+        elif document.metadata.get('source_type') == 'slack':
+            return "conversation"
+
+        # Confluence는 문서
+        elif document.metadata.get('source_type') == 'confluence':
+            return "documentation"
+
+        # 내용 분석으로 분류
+        return self._analyze_content(document.text)
+
+class SmartCodeParser:
+    """Tree-sitter 기반 AST 코드 청킹"""
+
+    def __init__(self):
+        self.MAX_BLOCK_CHARS = 1024
+        self.MIN_BLOCK_CHARS = 200
+        self.TOLERANCE_FACTOR = 1.5
+
+    async def chunk_code_file(self, document: Document) -> List[CodeChunk]:
+        """AST 기반 계층적 코드 청킹"""
+        file_path = document.metadata.get('file_path', '')
+        language = self._detect_language(file_path)
+
+        # 1. Tree-sitter로 AST 생성
+        tree = self._parse_with_tree_sitter(document.text, language)
+
+        # 2. 계층적 노드 추출
+        code_blocks = self._extract_code_blocks(tree.root_node, document.text)
+
+        # 3. 크기 기반 자동 청킹
+        chunks = []
+        for block in code_blocks:
+            if len(block.text) > self.MAX_BLOCK_CHARS * self.TOLERANCE_FACTOR:
+                # 큰 블록은 더 작은 단위로 분할
+                sub_chunks = await self._chunk_large_block(block)
+                chunks.extend(sub_chunks)
+            else:
+                chunks.append(block)
+
+        return chunks
+
+    async def _chunk_large_block(self, block: CodeBlock) -> List[CodeChunk]:
+        """큰 코드 블록을 의미 단위로 분할"""
+
+        # 1. 자식 노드가 있으면 자식 단위로 분할
+        if block.children:
+            chunks = []
+            for child in block.children:
+                if len(child.text) >= self.MIN_BLOCK_CHARS:
+                    chunks.append(CodeChunk(
+                        text=child.text,
+                        start_line=child.start_line,
+                        end_line=child.end_line,
+                        node_type=child.node_type,
+                        hash=self._generate_hash(child.text)
+                    ))
+            return chunks
+
+        # 2. 리프 노드는 라인 기반 분할
+        return self._chunk_by_lines(block)
+
+    def _chunk_by_lines(self, block: CodeBlock) -> List[CodeChunk]:
+        """라인 단위 청킹 (의미 보존)"""
+        lines = block.text.split('\n')
+        chunks = []
+        current_chunk = []
+        current_size = 0
+        start_line = block.start_line
+
+        for i, line in enumerate(lines):
+            current_chunk.append(line)
+            current_size += len(line)
+
+            # 청크 크기 체크
+            if (current_size >= self.MIN_BLOCK_CHARS and
+                current_size <= self.MAX_BLOCK_CHARS):
+
+                # 의미있는 끝점에서 분할 (함수 끝, 클래스 끝 등)
+                if self._is_good_break_point(line):
+                    chunks.append(CodeChunk(
+                        text='\n'.join(current_chunk),
+                        start_line=start_line,
+                        end_line=start_line + len(current_chunk) - 1,
+                        node_type=block.node_type,
+                        hash=self._generate_hash('\n'.join(current_chunk))
+                    ))
+                    current_chunk = []
+                    current_size = 0
+                    start_line = start_line + i + 1
+
+        # 마지막 청크 처리
+        if current_chunk and current_size >= self.MIN_BLOCK_CHARS:
+            chunks.append(CodeChunk(
+                text='\n'.join(current_chunk),
+                start_line=start_line,
+                end_line=start_line + len(current_chunk) - 1,
+                node_type=block.node_type,
+                hash=self._generate_hash('\n'.join(current_chunk))
+            ))
+
+        return chunks
+```
+
+### 2. 임베딩 및 벡터 저장
+
+```python
+class EmbeddingService:
+    """배치 기반 임베딩 + Qdrant 저장"""
+
+    def __init__(self):
+        self.model_name = "text-embedding-3-small"
+        self.qdrant_client = QdrantClient()
+
+    async def embed_and_store(self, chunks: List[ProcessedChunk], collection: str):
+        """배치 단위로 임베딩 + 저장"""
+        batch_size = 50
+
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i + batch_size]
+
+            # 1. 임베딩 생성
+            texts = [chunk.text for chunk in batch]
+            embeddings = await self._generate_embeddings(texts)
+
+            # 2. Qdrant 포인트 구성
+            points = [
+                PointStruct(
+                    id=chunk.id,
+                    vector=embedding,
+                    payload={
+                        "text": chunk.text,
+                        "content_type": chunk.metadata.get("content_type"),
+                        "chunk_type": chunk.metadata.get("chunk_type"),  # original/summary
+                        "source_type": chunk.metadata.get("source_type"),
+                        "start_line": chunk.metadata.get("start_line"),  # 코드 라인 정보
+                        "end_line": chunk.metadata.get("end_line"),
+                        "node_type": chunk.metadata.get("node_type"),    # function, class 등
+                        "code_hash": chunk.metadata.get("hash"),         # 중복 방지
+                        **chunk.metadata
+                    }
+                )
+                for chunk, embedding in zip(batch, embeddings)
+            ]
+
+            # 3. 벡터 저장
+            await self.qdrant_client.upsert(collection_name=collection, points=points)
+```
+
+### 3. 스마트 요약 기준
+
+```python
+class SmartSummarizationRules:
+    """실용적인 요약 기준"""
+
+    @staticmethod
+    def should_summarize(chunk: Chunk, content_type: str) -> bool:
+        """청크별 요약 필요 여부 판단"""
+
+        # 1. 소스코드도 길면 요약 (단, 신중하게)
+        if content_type == "source_code":
+            # 매우 긴 코드만 요약 (주석/docstring 위주)
+            return text_length >= 2000
+
+        # 2. 크기 기준 (핵심!)
+        text_length = len(chunk.text)
+        if text_length < 300:  # 너무 짧으면 요약 불필요
+            return False
+        if text_length < 800:  # 적당한 크기면 선택적
+            return content_type in ["conversation"]  # 대화만 요약
+        if text_length >= 1500:  # 긴 텍스트는 무조건 요약
+            return True
+
+        # 3. 콘텐츠 타입별 중간 크기 처리
+        return {
+            "documentation": text_length >= 600,  # 문서는 조금 더 관대
+            "conversation": text_length >= 400,   # 대화는 빨리 요약
+            "mixed_content": text_length >= 500   # Mixed는 중간
+        }.get(content_type, False)
+
+# 실제 요약 기준 테이블
+SUMMARIZATION_THRESHOLDS = {
+    "source_code": {"enabled": True, "min_length": 2000, "prompt": "코드의 기능과 목적을 간단히 설명:"},
+    "documentation": {"enabled": True, "min_length": 600},
+    "conversation": {"enabled": True, "min_length": 400},
+    "mixed_content": {"enabled": True, "min_length": 500}
+}
+```
+
+### 4. 요약 기준 요약
+
+| 콘텐츠 타입 | 기본 정책 | 최소 길이 | 무조건 요약 | 요약 방식 |
+|------------|----------|----------|------------|----------|
+| **소스코드** | 🌳 AST 기반 청킹 | 200-1024자 단위 | 2000자 이상 | Tree-sitter로 의미 단위 분할 |
+| **문서** | 📏 크기 기준 | 600자 이상 | 1500자 이상 | 핵심 내용 요약 |
+| **대화** | 📏 크기 기준 | 400자 이상 | 1500자 이상 | 결론/액션 아이템 |
+| **Mixed** | 📏 크기 기준 | 500자 이상 | 1500자 이상 | 선택적 요약 |
+
+**💡 스마트 코드 청킹 아이디어**:
+- **AST 기반 분할**: Tree-sitter로 함수/클래스 단위 의미 보존
+- **계층적 청킹**: 큰 블록 → 자식 노드 → 라인 단위 순차 분할
+- **라인 정보 보존**: start_line, end_line으로 정확한 위치 추적
+- **중복 방지**: 코드 해시로 동일 코드 블록 감지
+- **의미적 끝점**: 함수/클래스 끝에서 자연스럽게 분할
 
 ## 📊 모니터링 및 메트릭
 
