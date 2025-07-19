@@ -1,11 +1,13 @@
-# Confluence Loader 상세 설계
+# Confluence Loader 설계
 
-## 주요 기능
+**Confluence Cloud에서 문서와 댓글을 수집하는 로더입니다.**
 
-- Confluence Cloud API를 통한 페이지 및 댓글 수집
-- CQL(Confluence Query Language) 기반 검색
-- 페이지 계층 구조 처리
-- 첨부파일 메타데이터 수집
+## 🎯 주요 특징
+
+- **CQL 기반 검색**: Confluence Query Language로 정교한 검색
+- **계층 구조 처리**: 페이지 부모-자식 관계 유지
+- **증분 업데이트**: 수정 날짜 기반 효율적 업데이트
+- **댓글 수집**: 페이지별 댓글 포함/제외 옵션
 
 ## 데이터 모델
 
@@ -46,22 +48,58 @@ class ConfluenceOptions:
 - `GET /wiki/rest/api/content/{id}/child/comment` - 댓글 조회
 - CQL을 통한 고급 검색
 
-## 주요 개선점
+## 🔧 핵심 구현
+
+### API 연동 (Cloud)
+
+- **Confluence Cloud REST API** 사용
+- **인증**: Email + API Token (Basic Auth)
+- `GET /wiki/rest/api/content` - 페이지 조회
+- `GET /wiki/rest/api/content/{id}/child/comment` - 댓글 조회
+
+### 메인 로더 클래스
 
 ```python
-class ConfluenceCloudClient:
-    def __init__(self, base_url: str, email: str, api_token: str):
-        self.base_url = base_url  # https://company.atlassian.net
-        self.auth = aiohttp.BasicAuth(email, api_token)
+# loaders/confluence/loader.py
+from core.base import BaseLoader
 
-    async def search_content(self, cql: str) -> List[Dict]:
-        # CQL 예시: "space = ENG AND type = page AND lastModified > '2024-01-01'"
-        url = f"{self.base_url}/wiki/rest/api/content/search"
-        params = {"cql": cql, "expand": "body.storage,space,version"}
+class ConfluenceLoader(BaseLoader):
+    def __init__(self):
+        config_manager = LoaderConfigManager()
+        self.config = config_manager.load_loader_config("confluence")
+        self.spaces = config_manager.load_loader_sources("confluence")
+        self.client = ConfluenceClient(self.config)
 
-        async with self.session.get(url, params=params, auth=self.auth) as response:
-            data = await response.json()
-            return data.get("results", [])
+    async def load_source(self, source: ConfluenceSource) -> AsyncGenerator[Document, None]:
+        # CQL 쿼리 구성
+        cql = self._build_cql_query(source)
+        pages = await self.client.search_content(cql)
+
+        latest_modified = None
+        for page_data in pages:
+            page = await self._fetch_page_details(page_data['id'])
+
+            # 최신 수정 시간 추적
+            if not latest_modified or page.modified_date > latest_modified:
+                latest_modified = page.modified_date
+
+            yield self._page_to_document(page, source)
+
+        # 마지막 수집 시간 업데이트
+        if latest_modified:
+            await self._update_last_modified_time(source.key, latest_modified)
+
+    def _build_cql_query(self, source: ConfluenceSource) -> str:
+        """CQL 쿼리 생성"""
+        cql_parts = [f"space = {source.space} AND type = page"]
+
+        # 증분 업데이트 처리
+        if source.options.incremental:
+            last_modified = self._get_last_modified_time(source.key)
+            if last_modified:
+                cql_parts.append(f"lastModified > '{last_modified.strftime('%Y-%m-%d')}'")
+
+        return " AND ".join(cql_parts)
 ```
 
 ## 테스트 방법
@@ -109,21 +147,39 @@ if __name__ == "__main__":
 ### 설정 예시
 
 ```yaml
-# config/loader.yaml
-sources:
-  confluence:
-    - key: "engineering-docs"
-      space: "ENG"
-      type: "space"
-      options:
-        include_comments: true
-        include_attachments: false
-        modified_since: "2024-01-01"
-    - key: "product-specs"
-      space: "PROD"
-      type: "space"
-      options:
-        include_comments: false
+# loaders/confluence/config/config.yaml
+loader:
+  name: "confluence"
+  enabled: true
+  default_options:
+    include_comments: true
+    include_attachments: false
+    incremental: true
+  api_settings:
+    timeout_seconds: 30
+    retry_attempts: 2
+    page_size: 25
+
+# loaders/confluence/config/spaces.yaml
+spaces:
+  - key: "engineering-docs"
+    space: "ENG"
+    type: "space"
+    description: "Engineering documentation space"
+    options:
+      include_comments: true
+      include_attachments: false
+      modified_since: "2024-01-01"
+    cql_templates:
+      recent_pages: "space = ENG AND type = page AND lastModified > '{date}'"
+      api_docs: "space = ENG AND label = 'api-doc'"
+  - key: "product-specs"
+    space: "PROD"
+    type: "space"
+    description: "Product specifications"
+    options:
+      include_comments: false
+      include_attachments: true
 ```
 
 ## CQL 쿼리 예시
@@ -142,125 +198,139 @@ cql = "space = ENG AND title ~ 'authentication'"
 cql = "space = ENG AND creator = 'john.doe@company.com'"
 ```
 
-## 실행 빈도 권장사항
+## ⚙️ 설정 및 실행
 
-Confluence는 문서 관리 시스템 특성상 상대적으로 낮은 실행 빈도가 적절합니다:
+### 실행 빈도
 
-### 권장 스케줄
+| 환경 | 스케줄 | 이유 |
+|------|--------|------|
+| **프로덕션** | 하루 1회 (10시) | 문서는 상대적으로 낮은 업데이트 빈도 |
+| **개발환경** | 주 1회 (일요일 12시) | 개발 효율성 |
 
-- **프로덕션**: 하루 1회 (오전 10시)
-- **개발환경**: 주 1회 (일요일 오후 12시)
-
-### 스케줄링 고려사항
-
-- **문서 업데이트 패턴**: 일반적으로 일괄 업데이트 또는 주기적 업데이트
-- **API 성능**: Confluence Cloud API는 상대적으로 느림
-- **증분 업데이트**: `modified_since` 옵션으로 효율적 처리 가능
+### 스케줄링 설정
 
 ```yaml
-# 권장 설정 예시
-confluence:
-  schedule: "0 10 * * *"        # 하루 1회
-  timeout: 45                   # 45분 타임아웃 (API 응답 고려)
-  retry_attempts: 2
-  options:
-    modified_since: "1 day ago" # 증분 업데이트
+# config/schedule.yaml
+sources:
+  confluence:
+    schedule: "0 10 * * *"        # 하루 1회
+    timeout_minutes: 45           # API 응답 시간 고려
+    priority: medium
 ```
 
-## 주요 특징
+### 성능 고려사항
 
-- **CQL 지원**: 복잡한 검색 조건 설정 가능
-- **계층 구조**: 페이지 부모-자식 관계 유지
-- **댓글 처리**: 페이지 댓글 포함/제외 옵션
-- **첨부파일**: 메타데이터만 수집 (실제 파일은 별도 처리)
-- **증분 업데이트**: 수정 날짜 기반 업데이트 지원
-- **에러 처리**: API 타임아웃 및 인증 오류 대응
-- **Cloud 최적화**: Confluence Cloud API 특성에 맞춘 설계
+- **API 성능**: Confluence Cloud API는 상대적으로 느림
+- **배치 크기**: 25개 페이지씩 처리
+- **타임아웃**: 45분 (대용량 스페이스 고려)
 
-## 증분 업데이트 전략
+## 🔄 핵심 기능
+
+### 1. CQL 기반 검색
+
+Confluence Query Language로 정교한 검색 조건 설정
 
 ```python
-class ConfluenceLoader(BaseLoader):
-    async def load_source(self, source: ConfluenceSource) -> AsyncGenerator[Document, None]:
-        # CQL 쿼리 구성
-        cql_parts = [f"space = {source.space} AND type = page"]
+def _build_advanced_cql(self, source: ConfluenceSource) -> str:
+    """고급 CQL 쿼리 생성"""
+    # 기본 조건
+    cql_parts = [f"space = {source.space}", "type = page"]
 
-        # 증분 업데이트 처리
-        if source.options.incremental:
-            last_modified = await self._get_last_modified_time(source.key)
-            if last_modified:
-                # 마지막 수집 이후 수정된 페이지만 처리
-                cql_parts.append(f"lastModified > '{last_modified.strftime('%Y-%m-%d')}'")
-        elif source.options.modified_since:
-            # 수동 설정된 날짜 이후
-            cql_parts.append(f"lastModified > '{source.options.modified_since.strftime('%Y-%m-%d')}'")
+    # 증분 업데이트
+    if source.options.incremental:
+        last_modified = self._get_last_modified_time(source.key)
+        if last_modified:
+            cql_parts.append(f"lastModified > '{last_modified.strftime('%Y-%m-%d')}'")
 
-        cql = " AND ".join(cql_parts)
-        pages = await self.client.search_content(cql)
+    # 템플릿 사용 (설정 파일에서)
+    if hasattr(source, 'cql_templates'):
+        template = source.cql_templates.get('recent_pages')
+        if template:
+            return template.format(space=source.space, date=last_modified)
 
-        latest_modified = None
-        for page_data in pages:
-            page = await self._fetch_page_details(page_data['id'])
+    return " AND ".join(cql_parts)
 
-            # 최신 수정 시간 추적
-            if not latest_modified or page.modified_date > latest_modified:
-                latest_modified = page.modified_date
-
-            yield self._page_to_document(page, source)
-
-        # 마지막 수집 시간 업데이트
-        if latest_modified:
-            await self._update_last_modified_time(source.key, latest_modified)
-
-    async def _get_last_modified_time(self, source_key: str) -> Optional[datetime]:
-        """마지막 수집된 페이지의 수정 시간 조회"""
-        timestamp = await self.cache_client.get(f"last_modified:{source_key}")
-        return datetime.fromisoformat(timestamp) if timestamp else None
-
-    async def _update_last_modified_time(self, source_key: str, modified_time: datetime):
-        """마지막 수집 시간 업데이트"""
-        await self.cache_client.set(
-            f"last_modified:{source_key}",
-            modified_time.isoformat(),
-            expire=86400*30  # 30일 보관
-        )
+# CQL 쿼리 예시들
+COMMON_CQL_QUERIES = {
+    "recent_pages": "space = {space} AND type = page AND lastModified > '{date}'",
+    "api_docs": "space = {space} AND label = 'api-doc'",
+    "user_pages": "space = {space} AND creator = '{email}'"
+}
 ```
 
-## 에러 처리 전략
+### 2. 계층 구조 처리
+
+페이지 부모-자식 관계 유지 및 처리
 
 ```python
-class ConfluenceLoader(BaseLoader):
-    async def load_source(self, source: ConfluenceSource) -> AsyncGenerator[Document, None]:
-        retry_count = 0
-        max_retries = 2  # Confluence API는 느리므로 적은 재시도
+async def _fetch_page_with_hierarchy(self, page_id: str) -> ConfluencePage:
+    """페이지와 계층 정보 함께 조회"""
+    page_data = await self.client.get_page(page_id, expand="ancestors,space,version")
 
-        while retry_count <= max_retries:
-            try:
-                pages = await self.client.search_content(
-                    cql=self._build_cql_query(source)
-                )
+    # 부모 페이지 경로 구성
+    ancestors = []
+    for ancestor in page_data.get('ancestors', []):
+        ancestors.append(ancestor['title'])
 
-                for page_data in pages:
-                    page = await self._fetch_page_details(page_data['id'])
-                    yield self._page_to_document(page, source)
-                break
+    return ConfluencePage(
+        id=page_data['id'],
+        title=page_data['title'],
+        content=page_data['body']['storage']['value'],
+        space_key=page_data['space']['key'],
+        ancestors=ancestors,  # 계층 구조 정보
+        url=f"{self.base_url}/wiki{page_data['_links']['webui']}"
+    )
+```
 
-            except ConfluenceAPITimeoutError:
-                if retry_count < max_retries:
-                    retry_count += 1
-                    wait_time = min(30, 10 * retry_count)  # 최대 30초
-                    await asyncio.sleep(wait_time)
-                    continue
-                else:
-                    raise
-            except ConfluenceAuthError:
-                # 인증 오류는 재시도하지 않음
-                raise
-            except Exception as e:
-                if retry_count < max_retries:
-                    retry_count += 1
-                    await asyncio.sleep(5 * retry_count)
-                    continue
-                else:
-                    raise
+### 3. 댓글 통합 처리
+
+페이지별 댓글 수집 및 Document 통합
+
+```python
+async def _process_page_with_comments(self, page: ConfluencePage, source: ConfluenceSource):
+    """페이지와 댓글을 하나의 Document로 통합"""
+    content_parts = [page.content]
+
+    if source.options.include_comments:
+        comments = await self.client.get_page_comments(page.id)
+        comment_texts = [f"댓글: {comment.body}" for comment in comments]
+        content_parts.extend(comment_texts)
+
+    return Document(
+        id=f"confluence_{page.space_key}_{page.id}",
+        title=page.title,
+        text="\n---COMMENT---\n".join(content_parts),
+        metadata={
+            "source_type": "confluence",
+            "space_key": page.space_key,
+            "page_id": page.id,
+            "ancestors": " > ".join(page.ancestors),  # 계층 경로
+            "comment_count": len(content_parts) - 1,
+            "url": page.url
+        }
+    )
+```
+
+## 🚀 사용 방법
+
+### 1. 개별 실행
+
+```bash
+# Confluence 로더만 실행
+python main.py --loader confluence
+
+# 특정 스페이스만 실행
+python main.py --loader confluence --source engineering-docs
+```
+
+### 2. CQL 쿼리 테스트
+
+```bash
+# CQL 쿼리 검증
+python -c "
+from loaders.confluence.client import ConfluenceClient
+client = ConfluenceClient(config)
+results = client.search_content('space = ENG AND type = page')
+print(f'Found {len(results)} pages')
+"
 ```

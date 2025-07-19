@@ -1,11 +1,13 @@
-# Slack Loader 상세 설계
+# Slack Loader 설계
 
-## 주요 기능
+**실시간 커뮤니케이션 도구인 Slack에서 메시지와 스레드를 수집하는 로더입니다.**
 
-- Slack 채널의 메시지와 스레드 수집
-- 봇 메시지 필터링
-- 날짜 범위 기반 수집
-- Rate limiting 및 재시도 처리
+## 🎯 주요 특징
+
+- **메시지 및 스레드 수집**: 채널 메시지와 스레드 답글 모두 처리
+- **봇 메시지 필터링**: 봇 메시지 자동 제외로 노이즈 감소
+- **증분 업데이트**: 마지막 수집 시간 이후 메시지만 처리
+- **Rate Limiting**: Slack API 제한 준수 (50+ calls/minute)
 
 ## 데이터 모델
 
@@ -37,29 +39,43 @@ class SlackOptions:
     incremental: bool = True  # 증분 업데이트 사용
 ```
 
-## API 연동
+## 🔧 핵심 구현
+
+### API 연동
 
 - **Slack Web API** 사용
 - `conversations.history` - 채널 메시지 조회
 - `conversations.replies` - 스레드 응답 조회
 - `users.info` - 사용자 정보 조회
 
-## 구현 예시
+### 메인 로더 클래스
 
 ```python
+# loaders/slack/loader.py
+from core.base import BaseLoader
+
 class SlackLoader(BaseLoader):
-    def __init__(self, client: SlackClient):
-        self.client = client
+    def __init__(self):
+        config_manager = LoaderConfigManager()
+        self.config = config_manager.load_loader_config("slack")
+        self.channels = config_manager.load_loader_sources("slack")
+        self.client = SlackClient(self.config)
 
     async def load_source(self, source: SlackSource) -> AsyncGenerator[Document, None]:
+        # 증분 업데이트 처리
+        last_fetch_time = await self._get_last_fetch_time(source.key)
+
         messages = await self.client.get_channel_messages(
             channel=source.channel,
-            options=source.options
+            oldest=last_fetch_time.timestamp() if last_fetch_time else None
         )
 
         for message in messages:
             if self._should_include_message(message):
                 yield self._message_to_document(message, source)
+
+        # 수집 시간 업데이트
+        await self._update_last_fetch_time(source.key, datetime.now())
 ```
 
 ## 테스트 방법
@@ -106,136 +122,156 @@ if __name__ == "__main__":
 ### 설정 예시
 
 ```yaml
-# config/loader.yaml
-sources:
-  slack:
-    - key: "general-channel"
-      workspace: "T029G2MBUF6"
-      channel: "C052ADQ5B3N"
-      name: "#general"
-      options:
-        include_replies: true
-        exclude_bots: true
-        date_from: "2024-01-01"
-    - key: "dev-channel"
-      workspace: "T029G2MBUF6"
-      channel: "C052ADQ5B3X"
-      name: "#dev"
+# loaders/slack/config/config.yaml
+loader:
+  name: "slack"
+  enabled: true
+  default_options:
+    include_replies: true
+    exclude_bots: true
+    incremental: true
+  rate_limit:
+    requests_per_minute: 50
+    retry_attempts: 3
+    backoff_factor: 2
+
+# loaders/slack/config/channels.yaml
+channels:
+  - key: "general-channel"
+    workspace: "T029G2MBUF6"
+    channel: "C052ADQ5B3N"
+    name: "#general"
+    options:
+      include_replies: true
+      exclude_bots: true
+      date_from: "2024-01-01"
+  - key: "dev-channel"
+    workspace: "T029G2MBUF6"
+    channel: "C052ADQ5B3X"
+    name: "#dev"
+    options:
+      include_replies: false  # 개발 채널은 스레드 제외
+      exclude_bots: true
 ```
 
-## 실행 빈도 권장사항
+## ⚙️ 설정 및 실행
 
-Slack은 실시간 커뮤니케이션 도구 특성상 높은 실행 빈도가 필요합니다:
+### 실행 빈도
 
-### 권장 스케줄
+| 환경 | 스케줄 | 이유 |
+|------|--------|------|
+| **프로덕션** | 하루 3회 (9시, 14시, 18시) | 업무시간 집중 활동 |
+| **개발환경** | 하루 1회 (10시) | 개발 편의성 |
 
-- **프로덕션**: 하루 3회 (오전 9시, 오후 2시, 오후 6시)
-- **개발환경**: 하루 1회 (오전 10시)
-
-### 스케줄링 고려사항
-
-- **업무시간 집중**: 대부분의 Slack 활동이 업무시간에 발생
-- **Rate Limiting**: Slack API 제한 (Tier 3: 50+ calls/minute)
-- **데이터 볼륨**: 채널 수와 메시지 수에 따라 실행 시간 변동
+### 스케줄링 설정
 
 ```yaml
-# 권장 설정 예시
-slack:
-  schedule: "0 9,14,18 * * *"    # 하루 3회
-  timeout: 30                   # 30분 타임아웃
-  retry_attempts: 3
-  rate_limit_buffer: 10         # API 호출 여유분
+# config/schedule.yaml
+sources:
+  slack:
+    schedule: "0 9,14,18 * * *"    # 하루 3회
+    timeout_minutes: 30
+    priority: high
 ```
 
-## 주요 특징
+### 성능 고려사항
 
-- **Rate Limiting**: Slack API 제한 준수
-- **Thread 처리**: 스레드 메시지 포함/제외 옵션
-- **Bot 필터링**: 봇 메시지 자동 제외
-- **날짜 범위**: 특정 기간 메시지만 수집
+- **Rate Limiting**: Slack API 제한 (50+ calls/minute) 준수
+- **배치 처리**: 100개 메시지마다 체크포인트 저장
 - **에러 처리**: 지수 백오프로 3회 재시도
-- **실시간성**: 최신 대화 내용 신속 반영
-- **증분 업데이트**: 마지막 수집 시간 이후 메시지만 처리
 
-## 증분 업데이트 전략
+## 🔄 핵심 기능
+
+### 1. 증분 업데이트
+
+마지막 수집 시간 이후 메시지만 처리하여 효율성 향상
 
 ```python
-class SlackLoader(BaseLoader):
-    async def load_source(self, source: SlackSource) -> AsyncGenerator[Document, None]:
-        # 마지막 수집 시간 조회
-        last_fetch_time = await self._get_last_fetch_time(source.key)
+async def _get_last_fetch_time(self, source_key: str) -> Optional[datetime]:
+    """Redis에서 마지막 수집 시간 조회"""
+    timestamp = await self.cache_client.get(f"last_fetch:{source_key}")
+    return datetime.fromtimestamp(float(timestamp)) if timestamp else None
 
-        # 증분 업데이트 옵션이 활성화된 경우
-        if source.options.incremental and last_fetch_time:
-            # 마지막 수집 이후 메시지만 처리
-            messages = await self.client.get_channel_messages(
-                channel=source.channel,
-                oldest=last_fetch_time.timestamp()
-            )
-        else:
-            # 전체 메시지 처리
-            messages = await self.client.get_channel_messages(
-                channel=source.channel,
-                options=source.options
-            )
-
-        for message in messages:
-            if self._should_include_message(message):
-                yield self._message_to_document(message, source)
-
-        # 수집 시간 업데이트
-        await self._update_last_fetch_time(source.key, datetime.now())
-
-    async def _get_last_fetch_time(self, source_key: str) -> Optional[datetime]:
-        """마지막 수집 시간 조회"""
-        timestamp = await self.cache_client.get(f"last_fetch:{source_key}")
-        return datetime.fromtimestamp(float(timestamp)) if timestamp else None
-
-    async def _update_last_fetch_time(self, source_key: str, fetch_time: datetime):
-        """마지막 수집 시간 업데이트"""
-        await self.cache_client.set(
-            f"last_fetch:{source_key}",
-            str(fetch_time.timestamp()),
-            expire=86400*30  # 30일 보관
-        )
+async def _update_last_fetch_time(self, source_key: str, fetch_time: datetime):
+    """수집 완료 후 시간 업데이트 (30일 보관)"""
+    await self.cache_client.set(
+        f"last_fetch:{source_key}",
+        str(fetch_time.timestamp()),
+        expire=86400*30
+    )
 ```
 
-## 에러 처리 전략
+### 2. 에러 처리 및 재시도
+
+Rate Limiting과 네트워크 오류에 대한 견고한 처리
 
 ```python
-class SlackLoader(BaseLoader):
-    async def load_source(self, source: SlackSource) -> AsyncGenerator[Document, None]:
-        retry_count = 0
-        max_retries = 3
+async def load_source_with_retry(self, source: SlackSource):
+    for attempt in range(3):  # 최대 3회 재시도
+        try:
+            async for message in self._fetch_messages(source):
+                yield message
+            break
+        except SlackAPIError as e:
+            if e.response['error'] == 'rate_limited':
+                retry_after = int(e.response.headers.get('Retry-After', 60))
+                await asyncio.sleep(retry_after)
+            else:
+                await asyncio.sleep(2 ** attempt)  # 지수 백오프
+        except Exception:
+            if attempt == 2:  # 마지막 시도
+                raise
+            await asyncio.sleep(2 ** attempt)
+```
 
-        while retry_count <= max_retries:
-            try:
-                messages = await self.client.get_channel_messages(
-                    channel=source.channel,
-                    options=source.options
-                )
+### 3. 스레드 처리
 
-                for message in messages:
-                    if self._should_include_message(message):
-                        yield self._message_to_document(message, source)
-                break
+메시지별 스레드 답글 수집 및 연결
 
-            except SlackAPIError as e:
-                if e.response['error'] == 'rate_limited':
-                    retry_after = int(e.response.headers.get('Retry-After', 60))
-                    await asyncio.sleep(retry_after)
-                    continue
-                elif retry_count < max_retries:
-                    retry_count += 1
-                    await asyncio.sleep(2 ** retry_count)
-                    continue
-                else:
-                    raise
-            except Exception as e:
-                if retry_count < max_retries:
-                    retry_count += 1
-                    await asyncio.sleep(2 ** retry_count)
-                    continue
-                else:
-                    raise
+```python
+async def _process_message_with_thread(self, message: SlackMessage, source: SlackSource):
+    """메시지와 스레드를 하나의 Document로 통합"""
+    content = [message.text]
+
+    if source.options.include_replies and message.thread_ts:
+        replies = await self.client.get_thread_replies(
+            channel=message.channel_id,
+            thread_ts=message.thread_ts
+        )
+        content.extend([reply.text for reply in replies])
+
+    return Document(
+        id=f"slack_{message.channel_id}_{message.timestamp}",
+        title=f"#{source.name} - {message.user_id}",
+        text="\n---THREAD---\n".join(content),
+        metadata={
+            "source_type": "slack",
+            "channel": source.name,
+            "user": message.user_id,
+            "has_thread": bool(message.thread_ts),
+            "reply_count": len(content) - 1
+        }
+    )
+```
+
+## 🚀 사용 방법
+
+### 1. 개별 실행
+
+```bash
+# Slack 로더만 실행
+python main.py --loader slack
+
+# 특정 채널만 실행
+python main.py --loader slack --source general-channel
+```
+
+### 2. 테스트 실행
+
+```bash
+# 개별 테스트 스크립트
+python scripts/test_slack.py
+
+# 연결 검증만
+python -c "from loaders.slack.client import SlackClient; print(SlackClient.test_connection())"
 ```

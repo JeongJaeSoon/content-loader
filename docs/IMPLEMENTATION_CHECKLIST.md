@@ -1,5 +1,7 @@
 # Content Loader 구현 체크리스트
 
+**단계별 체크리스트를 통해 체계적으로 구현을 진행하세요.**
+
 ## 🚀 프로젝트 준비 단계
 
 ### 📋 환경 설정 및 키 발급
@@ -283,22 +285,64 @@
   - [ ] 로그 레벨 설정
   - [ ] 로그 회전 설정
 
-#### [ ] 설정 파일 구조 구현
+#### [ ] 프로젝트 구조 구현 (계층 분리 구조)
 
-- [ ] **slack.yaml**
-  - [ ] 채널별 설정
-  - [ ] 옵션 설정 (replies, bots, date_range)
-- [ ] **confluence.yaml**
-  - [ ] 스페이스별 설정
-  - [ ] CQL 쿼리 템플릿
-- [ ] **github.yaml**
-  - [ ] 저장소별 설정
-  - [ ] 타입별 설정 (issues, files, source_code)
-- [ ] **presets.yaml**
-  - [ ] 언어별 프리셋 정의
-  - [ ] 청킹 전략 설정
-- [ ] **settings.yaml**
-  - [ ] 공통 설정 (chunking, embedding, retry)
+```
+content-loader/
+├── main.py                       # 메인 실행 진입점
+├── executor.py                   # 통합 실행기
+├── settings.py                   # 전역 설정 관리
+├── core/                         # 공통 기능 (별도 레벨)
+│   ├── base.py                  # BaseLoader 인터페이스
+│   ├── models.py                # 공통 데이터 모델
+│   ├── exceptions.py            # 공통 예외
+│   └── utils.py                 # 공통 유틸리티
+├── config/
+│   ├── settings.yaml            # 전역 설정
+│   └── schedule.yaml            # 스케줄링 설정
+└── loaders/                      # 구체적인 loader 구현체들만
+    ├── slack/
+    │   ├── config/
+    │   │   ├── config.yaml     # Slack 기본 설정
+    │   │   └── channels.yaml   # 채널별 상세 설정
+    │   ├── loader.py           # Slack 로더
+    │   ├── client.py           # Slack API 클라이언트
+    │   └── models.py           # Slack 전용 모델
+    ├── confluence/
+    │   ├── config/
+    │   │   ├── config.yaml     # Confluence 기본 설정
+    │   │   └── spaces.yaml     # 스페이스별 상세 설정
+    │   ├── loader.py           # Confluence 로더
+    │   ├── client.py           # Confluence API 클라이언트
+    │   └── models.py           # Confluence 전용 모델
+    └── github/
+        ├── config/
+        │   ├── config.yaml     # GitHub 기본 설정
+        │   ├── repositories.yaml # 저장소별 상세 설정
+        │   └── presets.yaml    # 소스코드 프리셋
+        ├── loader.py           # GitHub 로더
+        ├── client.py           # GitHub API 클라이언트
+        └── models.py           # GitHub 전용 모델
+```
+
+- [ ] **core/** - 공통 기능 모듈 (별도 레벨로 분리)
+  - [ ] `base.py` - BaseLoader 인터페이스 및 공통 메서드
+  - [ ] `models.py` - Document, Metadata 등 공통 데이터 모델
+  - [ ] `exceptions.py` - 공통 예외 클래스 정의
+  - [ ] `utils.py` - 공통 유틸리티 (chunking, retry, memory management)
+- [ ] **loaders/slack/config/**
+  - [ ] `config.yaml` - Slack 기본 설정 및 옵션
+  - [ ] `channels.yaml` - 채널별 상세 설정 (replies, bots, date_range)
+- [ ] **loaders/confluence/config/**
+  - [ ] `config.yaml` - Confluence 기본 설정
+  - [ ] `spaces.yaml` - 스페이스별 상세 설정 및 CQL 쿼리 템플릿
+- [ ] **loaders/github/config/**
+  - [ ] `config.yaml` - GitHub 기본 설정
+  - [ ] `repositories.yaml` - 저장소별 상세 설정 (issues, files, source_code)
+  - [ ] `presets.yaml` - 언어별 프리셋 및 청킹 전략 정의
+- [ ] **config/** - 전역 설정
+  - [ ] `settings.yaml` - 전역 공통 설정 (chunking, embedding, retry, cache)
+  - [ ] `schedule.yaml` - 스케줄링 및 환경별 설정
 
 #### [ ] Main 애플리케이션 구현
 

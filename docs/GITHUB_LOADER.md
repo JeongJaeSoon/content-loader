@@ -1,12 +1,13 @@
-# GitHub Loader 상세 설계
+# GitHub Loader 설계
 
-## 주요 기능
+**GitHub 저장소에서 Issues, 파일, 소스코드를 수집하는 로더입니다.**
 
-- GitHub Issues, Discussions, Files 수집
-- GitHub App 인증
-- GraphQL과 REST API 병행 사용
-- 파일 변경 추적 및 삭제 처리
-- 소스코드 인덱싱 및 청킹
+## 🎯 주요 특징
+
+- **다양한 데이터 타입**: Issues, Files, Source Code 지원
+- **GitHub App 인증**: 안전한 앱 기반 인증
+- **소스코드 프리셋**: 언어별 최적화된 청킹 전략
+- **보안 필터링**: 민감한 파일 자동 제외
 
 ## 데이터 모델
 
@@ -70,74 +71,87 @@ class GitHubOptions:
     include_comments: bool = True
 ```
 
-## API 연동
+## 🔧 핵심 구현
 
-- **GitHub App** 인증 (Installation Token)
-- **GraphQL API** - 복잡한 쿼리용
-- **REST API** - 단순한 데이터 조회용
+### API 연동
 
-## 구현 예시
+- **GitHub App 인증**: Installation Token 기반
+- **GraphQL API**: 복잡한 쿼리용
+- **REST API**: 단순한 데이터 조회용
+
+### 메인 로더 클래스
 
 ```python
+# loaders/github/loader.py
+from core.base import BaseLoader
+
 class GitHubLoader(BaseLoader):
-    def __init__(self, client: GitHubClient):
-        self.client = client
+    def __init__(self):
+        config_manager = LoaderConfigManager()
+        self.config = config_manager.load_loader_config("github")
+        self.repositories = config_manager.load_loader_sources("github")
+        self.presets = self._load_presets()
+        self.client = GitHubClient(self.config)
 
     async def load_source(self, source: GitHubSource) -> AsyncGenerator[Document, None]:
         if source.type == "issues":
-            async for issue in self.client.get_issues(source.owner, source.name):
-                yield self._issue_to_document(issue, source)
+            await self._load_issues(source)
         elif source.type == "files":
-            async for file in self.client.get_files(source.owner, source.name):
-                if self._should_include_file(file, source.options):
-                    yield self._file_to_document(file, source)
+            await self._load_files(source)
         elif source.type == "source_code":
-            async for file in self.client.get_source_files(source.owner, source.name, source.options):
-                if self._should_include_source_file(file, source.options):
-                    # 소스코드 파일을 청킹하여 여러 Document로 분할
-                    async for chunk_doc in self._chunk_source_file(file, source):
-                        yield chunk_doc
+            await self._load_source_code(source)
+
+    async def _load_source_code(self, source: GitHubSource):
+        """소스코드 타입 처리 - 프리셋 기반"""
+        preset = self.presets.get(source.options.preset, {})
+
+        files = await self.client.get_source_files(
+            source.owner,
+            source.name,
+            include_patterns=preset.get('include_patterns', []),
+            exclude_patterns=preset.get('exclude_patterns', [])
+        )
+
+        for file in files:
+            # 보안 필터링
+            if self._is_sensitive_file(file.path, preset):
+                continue
+
+            # SHA 기반 변경 감지
+            stored_sha = await self._get_stored_file_sha(f"{source.key}:{file.path}")
+            if stored_sha == file.sha:
+                continue
+
+            # 파일 청킹 처리
+            async for chunk_doc in self._chunk_source_file(file, source, preset):
+                yield chunk_doc
+
+            await self._update_stored_file_sha(f"{source.key}:{file.path}", file.sha)
 ```
 
 ## 소스코드 인덱싱 프리셋
 
-```python
-# GitHub 소스코드 프리셋 설정
-GITHUB_CODE_PRESETS = {
-    "python": {
-        "include_patterns": ["**/*.py"],
-        "exclude_patterns": ["**/__pycache__/**", "**/venv/**", "**/.pytest_cache/**"],
-        "chunking_strategy": "function_based",
-        "include_docstrings": True,
-        "security_exclude_patterns": ["**/.env*", "**/secrets.py", "**/*_secret*"]
-    },
-    "javascript": {
-        "include_patterns": ["**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx"],
-        "exclude_patterns": ["**/node_modules/**", "**/dist/**", "**/build/**"],
-        "chunking_strategy": "function_based",
-        "include_docstrings": True,
-        "include_comments": True,
-        "security_exclude_patterns": ["**/.env*", "**/secrets/**", "**/*.min.js"]
-    },
-    "full_stack": {
-        "include_patterns": ["**/*.py", "**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.md", "**/*.yml"],
-        "exclude_patterns": ["**/node_modules/**", "**/__pycache__/**", "**/venv/**", "**/dist/**", "**/build/**"],
-        "chunking_strategy": "function_based",
-        "max_file_size_kb": 300,
-        "include_docstrings": True,
-        "include_comments": True,
-        "security_exclude_patterns": ["**/.env*", "**/secrets/**", "**/*_secret*", "**/*_key*"]
-    }
-}
-```
+**YAML 설정 파일 기반으로 언어별 최적화 프리셋을 제공합니다.**
+
+프리셋은 `loaders/github/config/presets.yaml`에서 관리되며, 실행 시 동적으로 로드됩니다.
 
 ## 소스코드 청킹 전략
 
 ```python
 class GitHubSourceCodeProcessor:
     def __init__(self, preset_name: str = None, custom_options: GitHubOptions = None):
-        self.preset = GITHUB_CODE_PRESETS.get(preset_name, {}) if preset_name else {}
+        # presets.yaml에서 프리셋 로드
+        self.preset = self._load_preset(preset_name) if preset_name else {}
         self.options = custom_options or GitHubOptions()
+
+    def _load_preset(self, preset_name: str) -> dict:
+        """loaders/github/config/presets.yaml에서 프리셋 로드"""
+        config_path = Path("loaders/github/config/presets.yaml")
+        if config_path.exists():
+            with open(config_path) as f:
+                presets = yaml.safe_load(f)
+                return presets.get("presets", {}).get(preset_name, {})
+        return {}
 
     def _should_include_source_file(self, file_path: str) -> bool:
         """프리셋과 커스텀 설정을 기반으로 파일 포함 여부 결정"""
@@ -241,190 +255,213 @@ if __name__ == "__main__":
 ### 설정 예시
 
 ```yaml
-# config/loader.yaml
-sources:
-  github:
-    - key: "backend-issues"
-      owner: "company"
-      name: "backend-service"
-      type: "issues"
-      options:
-        state: "open"
-    - key: "docs-files"
-      owner: "company"
-      name: "documentation"
-      type: "files"
-      options:
-        extensions: [".md", ".rst"]
-    - key: "python-source"
-      owner: "company"
-      name: "api-service"
-      type: "source_code"
-      options:
-        preset: "python"
-        branch: "main"
-        max_file_size_kb: 200
+# loaders/github/config/config.yaml
+loader:
+  name: "github"
+  enabled: true
+  default_options:
+    incremental: true
+    max_file_size_kb: 500
+    branch: "main"
+  api_settings:
+    timeout_seconds: 60
+    retry_attempts: 3
+    rate_limit_buffer: 100  # API 호출 여유분
+
+# loaders/github/config/repositories.yaml
+repositories:
+  - key: "backend-issues"
+    owner: "company"
+    name: "backend-service"
+    type: "issues"
+    description: "Backend service issues and discussions"
+    options:
+      state: "open"
+      include_closed: false
+  - key: "docs-files"
+    owner: "company"
+    name: "documentation"
+    type: "files"
+    description: "Documentation files"
+    options:
+      extensions: [".md", ".rst"]
+      exclude_paths: ["archived/", "drafts/"]
+  - key: "python-source"
+    owner: "company"
+    name: "api-service"
+    type: "source_code"
+    description: "Python API service source code"
+    options:
+      preset: "python"
+      branch: "main"
+      max_file_size_kb: 200
+      custom_include_patterns: ["**/*.py", "**/*.pyi"]
+
+# loaders/github/config/presets.yaml
+presets:
+  python:
+    include_patterns: ["**/*.py"]
+    exclude_patterns: ["**/__pycache__/**", "**/venv/**", "**/.pytest_cache/**"]
+    chunking_strategy: "function_based"
+    include_docstrings: true
+    security_exclude_patterns: ["**/.env*", "**/secrets.py", "**/*_secret*"]
+  javascript:
+    include_patterns: ["**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx"]
+    exclude_patterns: ["**/node_modules/**", "**/dist/**", "**/build/**"]
+    chunking_strategy: "function_based"
+    include_docstrings: true
+    include_comments: true
+    security_exclude_patterns: ["**/.env*", "**/secrets/**", "**/*.min.js"]
 ```
 
-## 실행 빈도 권장사항
+## ⚙️ 설정 및 실행
 
-GitHub는 개발 활동에 따라 높은 업데이트 빈도를 가지므로 적절한 실행 빈도가 필요합니다:
+### 실행 빈도
 
-### 권장 스케줄
+| 환경 | 데이터 타입 | 스케줄 | 이유 |
+|------|-------------|--------|------|
+| **프로덕션** | Issues/Files | 하루 2회 (8시, 20시) | 개발 활동 패턴 |
+| **프로덕션** | Source Code | 하루 1회 (20시) | 대용량 처리 고려 |
+| **개발환경** | 전체 | 하루 1회 (11시) | 개발 편의성 |
 
-- **프로덕션**: 하루 2회 (오전 8시, 오후 8시)
-- **개발환경**: 하루 1회 (오전 11시)
-
-### 스케줄링 고려사항
-
-- **소스코드 인덱싱**: 대용량 처리로 인한 긴 실행 시간 (30-60분)
-- **API Rate Limit**: GitHub API 제한 (5000 requests/hour)
-- **개발 패턴**: 주로 업무시간과 저녁 시간대 활동
-
-### 소스별 차등 스케줄링
+### 스케줄링 설정
 
 ```yaml
-# 권장 설정 예시
-github:
-  issues:
+# config/schedule.yaml
+sources:
+  github:
     schedule: "0 8,20 * * *"      # 하루 2회
-    timeout: 20                   # 20분 타임아웃
+    timeout_minutes: 60           # 소스코드 처리 시간 고려
+    priority: high
 
-  files:
-    schedule: "0 8,20 * * *"      # 하루 2회
-    timeout: 30                   # 30분 타임아웃
-
-  source_code:
-    schedule: "0 20 * * *"        # 하루 1회 (저녁)
-    timeout: 90                   # 90분 타임아웃 (대용량 처리)
-    priority: low                 # 리소스 우선순위 낮음
+# 소스별 차등 처리
+github_source_code:
+  schedule: "0 20 * * *"          # 저녁 1회만
+  timeout_minutes: 90
+  priority: low
 ```
 
-### 성능 최적화 팁
+### 성능 고려사항
 
-- **배치 크기 조정**: 대용량 저장소는 작은 배치로 분할
-- **병렬 처리**: 여러 저장소 동시 처리
-- **캐싱 활용**: SHA 기반 변경 감지로 불필요한 처리 방지
+- **API Rate Limit**: GitHub API 제한 (5000 requests/hour) 준수
+- **대용량 처리**: 소스코드 인덱싱 시 90분 타임아웃
+- **SHA 기반 캐싱**: 변경되지 않은 파일 스킵으로 효율성 향상
 
-## 주요 특징
+## 🔄 핵심 기능
 
-- **다양한 소스**: Issues, Files, Source Code 지원
-- **프리셋 시스템**: 언어별 최적화된 설정
-- **보안 필터링**: 민감한 파일 자동 제외
-- **청킹 전략**: 함수 기반 코드 청킹
-- **GraphQL 지원**: 복잡한 쿼리 최적화
-- **파일 추적**: SHA 기반 변경 감지
-- **에러 처리**: Rate Limit 및 네트워크 오류 대응
-- **대용량 처리**: 소스코드 인덱싱을 위한 최적화
-- **증분 업데이트**: SHA 기반 파일 변경 감지
+### 1. 소스코드 프리셋 시스템
 
-## 증분 업데이트 전략
+언어별 최적화된 청킹 및 필터링 전략
+
+프리셋은 `loaders/github/config/presets.yaml`에서 설정되며, 각 저장소는 원하는 프리셋을 선택하거나 커스텀 설정으로 오버라이드할 수 있습니다.
 
 ```python
-class GitHubLoader(BaseLoader):
-    async def load_source(self, source: GitHubSource) -> AsyncGenerator[Document, None]:
-        if source.type == "issues":
-            await self._load_issues_incremental(source)
-        elif source.type == "source_code":
-            await self._load_source_code_incremental(source)
+def _apply_preset(self, source: GitHubSource) -> dict:
+    """프리셋 설정 적용"""
+    preset = self._load_preset(source.options.preset)
 
-    async def _load_issues_incremental(self, source: GitHubSource):
-        """이슈 증분 로딩"""
-        # 마지막 수집 시간 조회
-        since = None
-        if source.options.incremental:
-            since = await self._get_last_fetch_time(f"{source.key}:issues")
+    # 커스텀 설정으로 오버라이드
+    if source.options.custom_include_patterns:
+        preset['include_patterns'] = source.options.custom_include_patterns
 
-        issues = await self.client.get_issues(
-            source.owner,
-            source.name,
-            since=since
-        )
-
-        latest_updated = None
-        for issue in issues:
-            if not latest_updated or issue.updated_at > latest_updated:
-                latest_updated = issue.updated_at
-            yield self._issue_to_document(issue, source)
-
-        # 마지막 수집 시간 업데이트
-        if latest_updated:
-            await self._update_last_fetch_time(f"{source.key}:issues", latest_updated)
-
-    async def _load_source_code_incremental(self, source: GitHubSource):
-        """소스코드 증분 로딩 (SHA 기반)"""
-        files = await self.client.get_source_files(
-            source.owner,
-            source.name,
-            source.options
-        )
-
-        for file in files:
-            if not self._should_include_source_file(file, source.options):
-                continue
-
-            # SHA 기반 변경 감지
-            stored_sha = await self._get_stored_file_sha(f"{source.key}:{file.path}")
-            if stored_sha == file.sha:
-                continue  # 변경되지 않은 파일 스킵
-
-            # 파일 처리 및 SHA 업데이트
-            async for chunk_doc in self._chunk_source_file(file, source):
-                yield chunk_doc
-
-            await self._update_stored_file_sha(f"{source.key}:{file.path}", file.sha)
-
-    async def _get_stored_file_sha(self, file_key: str) -> Optional[str]:
-        """저장된 파일 SHA 조회"""
-        return await self.cache_client.get(f"file_sha:{file_key}")
-
-    async def _update_stored_file_sha(self, file_key: str, sha: str):
-        """파일 SHA 업데이트"""
-        await self.cache_client.set(
-            f"file_sha:{file_key}",
-            sha,
-            expire=86400*30  # 30일 보관
-        )
+    return preset
 ```
 
-## 에러 처리 전략
+### 2. SHA 기반 증분 업데이트
+
+파일 내용 변경 감지로 효율적 처리
 
 ```python
-class GitHubLoader(BaseLoader):
-    async def load_source(self, source: GitHubSource) -> AsyncGenerator[Document, None]:
-        retry_count = 0
-        max_retries = 3
+async def _process_file_with_sha_check(self, file: GitHubFile, source: GitHubSource):
+    """SHA 기반 파일 변경 감지"""
+    file_key = f"{source.key}:{file.path}"
+    stored_sha = await self.cache_client.get(f"file_sha:{file_key}")
 
-        while retry_count <= max_retries:
-            try:
-                if source.type == "issues":
-                    async for issue in self.client.get_issues(source.owner, source.name):
-                        yield self._issue_to_document(issue, source)
-                elif source.type == "source_code":
-                    async for file in self.client.get_source_files(source.owner, source.name, source.options):
-                        if self._should_include_source_file(file, source.options):
-                            async for chunk_doc in self._chunk_source_file(file, source):
-                                yield chunk_doc
-                break
+    if stored_sha == file.sha:
+        return  # 변경되지 않은 파일 스킵
 
-            except GitHubRateLimitError as e:
-                # Rate Limit 예외 처리
-                reset_time = e.reset_time
-                wait_time = min(reset_time - time.time(), 3600)  # 최대 1시간
-                logger.warning(f"GitHub rate limit exceeded. Waiting {wait_time}s")
-                await asyncio.sleep(wait_time)
-                continue
+    # 파일 처리
+    if source.type == "source_code":
+        async for chunk_doc in self._chunk_source_file(file, source):
+            yield chunk_doc
+    else:
+        yield self._file_to_document(file, source)
 
-            except GitHubAuthError:
-                # 인증 오류는 재시도하지 않음
-                raise
+    # SHA 업데이트 (30일 보관)
+    await self.cache_client.set(
+        f"file_sha:{file_key}",
+        file.sha,
+        expire=86400*30
+    )
+```
 
-            except Exception as e:
-                if retry_count < max_retries:
-                    retry_count += 1
-                    wait_time = min(60, 5 * (2 ** retry_count))  # 최대 60초
-                    await asyncio.sleep(wait_time)
-                    continue
-                else:
-                    raise
+### 3. 함수 기반 코드 청킹
+
+소스코드를 함수/클래스 단위로 분할
+
+```python
+async def _chunk_source_file(self, file: GitHubFile, source: GitHubSource):
+    """프리셋 기반 소스코드 청킹"""
+    preset = self._load_preset(source.options.preset)
+    strategy = preset.get('chunking_strategy', 'fixed_size')
+
+    if strategy == "function_based":
+        # AST 파싱으로 함수/클래스 추출
+        chunks = self._extract_functions_and_classes(file.content, file.path)
+    else:
+        # 고정 크기 청킹
+        chunks = self._chunk_by_size(file.content, 1024)
+
+    for i, chunk_content in enumerate(chunks):
+        yield Document(
+            id=f"github_{source.owner}_{source.name}_{file.path}_chunk_{i}",
+            title=f"{file.path} - Chunk {i+1}",
+            text=chunk_content,
+            metadata={
+                "source_type": "github",
+                "repository": f"{source.owner}/{source.name}",
+                "file_path": file.path,
+                "chunk_index": i,
+                "file_sha": file.sha,
+                "preset": source.options.preset
+            }
+        )
+
+def _extract_functions_and_classes(self, content: str, file_path: str) -> List[str]:
+    """AST 파싱으로 함수/클래스 추출"""
+    if file_path.endswith('.py'):
+        return self._extract_python_functions(content)
+    elif file_path.endswith(('.js', '.ts')):
+        return self._extract_javascript_functions(content)
+    else:
+        return self._chunk_by_size(content, 1024)
+```
+
+## 🚀 사용 방법
+
+### 1. 개별 실행
+
+```bash
+# GitHub 로더만 실행
+python main.py --loader github
+
+# 특정 저장소만 실행
+python main.py --loader github --source backend-issues
+
+# 소스코드만 실행
+python main.py --loader github --source python-source
+```
+
+### 2. 프리셋 테스트
+
+```bash
+# 프리셋 설정 확인
+python -c "
+from loaders.github.loader import GitHubLoader
+loader = GitHubLoader()
+print(loader.presets['python'])
+"
+
+# 특정 저장소 파일 목록 확인
+python scripts/test_github.py --repository company/backend-service --type source_code
 ```
