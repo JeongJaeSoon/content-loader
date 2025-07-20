@@ -33,7 +33,26 @@ content-loader/
 
 ## 🚀 빠른 시작
 
-### 1. 환경 설정
+### 1. 개발 환경 설정
+
+uv를 사용한 Python 환경 설정:
+
+```bash
+# uv 설치 (https://docs.astral.sh/uv/getting-started/installation/)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Python 3.11 설치 및 가상환경 생성
+uv python install 3.11
+uv venv
+
+# 의존성 설치
+uv pip install -e ".[dev]"
+
+# 개발도구 설정
+uv run pre-commit install
+```
+
+### 2. 환경변수 설정
 
 ```bash
 # 필수 환경변수 설정
@@ -49,24 +68,24 @@ export REDIS_HOST="localhost"
 export REDIS_PORT="6379"
 ```
 
-### 2. 실행
+### 3. 실행
 
 uv 환경에서 다음 명령어로 실행:
 
 ```bash
 # 전체 로더 실행
-python main.py
+uv run python main.py
 
 # 특정 로더만 실행
-python main.py --loader slack
-python main.py --loader github
-python main.py --loader confluence
+uv run python main.py --loader slack
+uv run python main.py --loader github
+uv run python main.py --loader confluence
 
 # 특정 소스만 실행
-python main.py --loader slack --source general-channel
+uv run python main.py --loader slack --source general-channel
 ```
 
-### 3. 설정 파일 구성
+### 4. 설정 파일 구성
 
 각 로더의 설정은 해당 디렉토리 내 `config/` 폴더에서 관리됩니다:
 
@@ -172,10 +191,42 @@ docker-compose -f docker-compose.prod.yml up -d
 
 ```bash
 # 개발 환경
-ENVIRONMENT=dev python main.py
+ENVIRONMENT=dev uv run python main.py
 
 # 프로덕션 환경
-ENVIRONMENT=prod python main.py
+ENVIRONMENT=prod uv run python main.py
+```
+
+## 🧪 개발 워크플로우
+
+### 코드 품질 검사
+
+```bash
+# 코드 포맷팅
+uv run black .
+uv run isort .
+
+# 타입 검사
+uv run mypy .
+
+# 린팅
+uv run flake8
+
+# 모든 검사 실행
+uv run pre-commit run --all-files
+```
+
+### 테스트 실행
+
+```bash
+# 전체 테스트
+uv run pytest
+
+# 커버리지 포함 테스트
+uv run pytest --cov=content_loader
+
+# 특정 테스트만 실행
+uv run pytest tests/test_slack_loader.py
 ```
 
 ## 🤝 기여하기

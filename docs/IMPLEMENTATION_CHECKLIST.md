@@ -81,9 +81,10 @@
 
 #### 기본 도구 설치
 
-- [ ] **Python 환경**
-  - [ ] Python 3.11+ 설치
-  - [ ] uv 설치: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- [x] **Python 환경 (uv 기반)**
+  - [x] uv 설치: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+  - [x] Python 3.11 설치: `uv python install 3.11`
+  - [x] 프로젝트 가상환경 생성: `uv venv`
   - [ ] Git 설정 확인
 - [ ] **개발 도구**
   - [ ] Docker Desktop 설치
@@ -97,26 +98,50 @@
   - [ ] 모든 필수 환경 변수 설정
   - [ ] `.env.example` 파일 작성
 
+#### uv 기반 개발 워크플로우
+
+- [x] **프로젝트 설정**
+  - [x] `pyproject.toml` 파일 생성
+  - [x] `.python-version` 파일 생성 (3.11)
+  - [x] 가상환경 생성: `uv venv`
+- [x] **의존성 관리**
+  - [x] 의존성 설치: `uv sync --extra dev --extra test`
+  - [x] 새 패키지 추가: `uv add package-name`
+  - [x] 개발 의존성 추가: `uv add --group dev package-name`
+  - [x] pydantic-settings 추가로 BaseSettings 지원
+- [x] **개발 도구 설정**
+  - [x] Pre-commit 설치: `uv run pre-commit install`
+  - [x] 코드 포맷팅: `uv run black .`
+  - [x] 타입 검사: `uv run mypy .`
+  - [x] 테스트 실행: `uv run pytest`
+- [x] **실행 명령어**
+  - [x] 메인 애플리케이션 실행: `uv run python main.py`
+  - [x] 메인 애플리케이션 상세 실행: `uv run python main.py --verbose`
+
 ---
 
 ## 🔧 구현 단계
 
 ### 1️⃣ **High Priority - 핵심 구현**
 
-#### [ ] 프로젝트 기본 구조 설정
+#### [x] 프로젝트 기본 구조 설정
 
-- [ ] `uv init content-loader` 실행
-- [ ] `pyproject.toml` 설정
-  - [ ] Python 버전 지정 (>=3.11)
-  - [ ] 의존성 추가 (fastapi, uvicorn, aiohttp, pydantic, etc.)
-  - [ ] 개발 의존성 추가 (pytest, black, ruff, etc.)
-- [ ] 디렉터리 구조 생성
-  - [ ] `src/content_loader/` 생성
-  - [ ] `config/` 생성
-  - [ ] `tests/` 생성
-  - [ ] `scripts/` 생성
-- [ ] `.gitignore` 파일 생성
-- [ ] `README.md` 초기 작성
+- [x] uv 기반 프로젝트 초기화
+- [x] `pyproject.toml` 설정
+  - [x] Python 버전 지정 (>=3.11)
+  - [x] 의존성 추가 (pydantic, httpx, aiohttp, structlog, etc.)
+  - [x] 개발 의존성 추가 (pytest, black, isort, mypy, etc.)
+  - [x] 도구 설정 (black, isort, mypy, pytest)
+  - [x] httpx-mock → respx 대체로 의존성 문제 해결
+- [x] `.python-version` 파일 생성 (3.11)
+- [x] 디렉터리 구조 생성
+  - [x] `content_loader/` 패키지 생성
+  - [x] `content_loader/core/` 생성
+  - [x] `content_loader/core/__init__.py` 생성
+  - [x] `content_loader/__init__.py` 생성
+- [x] `.gitignore` 파일 생성 (이미 존재)
+- [x] `README.md` uv 기반으로 업데이트
+- [x] `main.py` 기본 진입점 생성 및 테스트 완료
 
 #### [ ] Core Layer 구현
 
@@ -142,13 +167,14 @@
   - [ ] `src/content_loader/core/exceptions.py` 생성
   - [ ] 커스텀 예외 클래스 정의
 
-#### [ ] Settings 및 Configuration 시스템
+#### [x] Settings 및 Configuration 시스템
 
-- [ ] **Settings 클래스**
-  - [ ] `src/content_loader/settings.py` 생성
-  - [ ] Pydantic Settings 사용
-  - [ ] 환경변수 로딩 구현
-  - [ ] YAML 설정 로딩 구현
+- [x] **Settings 클래스**
+  - [x] `content_loader/core/config.py` 생성
+  - [x] Pydantic Settings 사용 (pydantic-settings)
+  - [x] 환경변수 로딩 구현 (.env 파일 지원)
+  - [x] 기본 설정값 정의 (database_url, redis_url, github_token, slack_bot_token, log_level)
+  - [x] extra="ignore" 설정으로 추가 환경변수 무시
 - [ ] **Configuration 로더**
   - [ ] 계층적 설정 로딩 (환경변수 > YAML > 기본값)
   - [ ] 설정 검증 로직 구현
@@ -394,16 +420,18 @@ content-loader/
   - [ ] 테스트 픽스처 정의
   - [ ] 테스트 설정 분리
 
-#### [ ] Docker 설정 구현
+#### [ ] Docker 설정 구현 (uv 기반)
 
-- [ ] **Dockerfile**
-  - [ ] 멀티스테이지 빌드
-  - [ ] uv 기반 의존성 설치
-  - [ ] 런타임 최적화
+- [ ] **Dockerfile (uv 최적화)**
+  - [ ] 멀티스테이지 빌드 (uv 설치 → 의존성 → 런타임)
+  - [ ] uv 기반 의존성 설치: `uv pip install --system -e .`
+  - [ ] 런타임 최적화 (Alpine 또는 Distroless 기반)
+  - [ ] 레이어 캐싱 최적화
 - [ ] **docker-compose.yml**
   - [ ] 서비스 정의 (content-loader, redis, qdrant)
   - [ ] 환경 변수 설정
   - [ ] 볼륨 마운트 설정
+  - [ ] uv 기반 헬스체크
 - [ ] **환경별 설정**
   - [ ] `docker-compose.dev.yml`
   - [ ] `docker-compose.prod.yml`
