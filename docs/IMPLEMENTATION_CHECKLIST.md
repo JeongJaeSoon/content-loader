@@ -191,29 +191,52 @@
   - [x] 기본 설정값 정의 (qdrant_url, redis_url, github_token, slack_bot_token, log_level)
   - [x] extra="ignore" 설정으로 추가 환경변수 무시
   - [x] 설정 검증 및 에러 처리 내장
-- [ ] **Configuration 로더**
+- [x] **Demo Loader 구현** (벡터 데이터베이스 파이프라인 테스트용)
+  - [x] `content_loader/loaders/demo/` 패키지 생성
+  - [x] `DemoExecutor` 클래스 구현 (10개 샘플 문서 생성)
+  - [x] 완전한 파이프라인 통합 (문서 생성 → 청킹 → 임베딩 → 저장 → 검색)
+  - [x] 검색 데모 기능 구현 (`search_demo()`)
+  - [x] 리소스 정리 기능 (`cleanup()`)
+- [ ] **Configuration 로더** (미구현)
   - [ ] 계층적 설정 로딩 (환경변수 > YAML > 기본값)
   - [ ] 설정 검증 로직 구현
   - [ ] 환경별 설정 분리 (dev, staging, prod)
 
-#### [ ] Service Layer 구현
+#### [x] Service Layer 구현 (벡터 데이터베이스 파이프라인 완료)
 
-- [ ] **EmbeddingService**
-  - [ ] `src/content_loader/services/embedding.py` 생성
-  - [ ] `upsert_documents()` 메서드 구현
-  - [ ] `delete_documents()` 메서드 구현
-  - [ ] 배치 처리 로직 구현
-- [ ] **SummarizerService**
+- [x] **EmbeddingService**
+  - [x] `content_loader/services/embedding_service.py` 생성
+  - [x] SentenceTransformers 기반 임베딩 생성 (`embed_text()`, `embed_texts()`)
+  - [x] 모델 차원 정보 제공 (`get_embedding_dimension()`)
+  - [x] 지연 로딩 최적화 구현
+- [x] **VectorStore**
+  - [x] `content_loader/services/vector_store.py` 생성
+  - [x] Qdrant 벡터 데이터베이스 연동
+  - [x] 컬렉션 생성 및 관리 (`ensure_collection()`)
+  - [x] 임베딩 저장 (`store_embeddings()`)
+  - [x] 유사도 검색 (`search_similar()`)
+  - [x] 컬렉션 정보 조회 (`get_collection_info()`)
+- [x] **DocumentProcessor**
+  - [x] `content_loader/services/document_processor.py` 생성
+  - [x] 문서 청킹 처리 (`chunk_document()`)
+  - [x] 단일/다중 문서 처리 (`process_document()`, `process_documents()`)
+  - [x] 문서 검색 기능 (`search_documents()`)
+  - [x] 완전한 파이프라인 통합 (문서 → 청킹 → 임베딩 → 저장)
+- [x] **Docker Compose 통합**
+  - [x] `docker-compose.yml` 생성 (Qdrant + Redis)
+  - [x] 헬스체크 및 볼륨 설정
+  - [x] 서비스 통합 검증 완료
+- [ ] **SummarizerService** (미구현)
   - [ ] `src/content_loader/services/summarizer.py` 생성
   - [ ] `summarize()` 메서드 구현
   - [ ] Redis 캐싱 로직 구현
   - [ ] 요약 품질 검증 로직
-- [ ] **CacheClient (Redis 기반)**
+- [ ] **CacheClient (Redis 기반)** (미구현)
   - [ ] `src/content_loader/services/cache_client.py` 생성
   - [ ] Redis 캐싱 구현 (1시간 기본 TTL)
   - [ ] 캐시 키 생성 전략 구현
   - [ ] 에러 처리 로직 구현
-- [ ] **LLMClient (사내 proxy 지원)**
+- [ ] **LLMClient (사내 proxy 지원)** (미구현)
   - [ ] `src/content_loader/services/llm_client.py` 생성
   - [ ] OpenAI 호환 인터페이스 구현
   - [ ] 사내 프록시 연동 로직
@@ -436,19 +459,20 @@ content-loader/
   - [ ] 테스트 픽스처 정의
   - [ ] 테스트 설정 분리
 
-#### [ ] Docker 설정 구현 (uv 기반)
+#### [x] Docker 설정 구현 (개발 환경 완료)
 
-- [ ] **Dockerfile (uv 최적화)**
+- [ ] **Dockerfile (uv 최적화)** (미구현)
   - [ ] 멀티스테이지 빌드 (uv 설치 → 의존성 → 런타임)
   - [ ] uv 기반 의존성 설치: `uv pip install --system -e .`
   - [ ] 런타임 최적화 (Alpine 또는 Distroless 기반)
   - [ ] 레이어 캐싱 최적화
-- [ ] **docker-compose.yml**
-  - [ ] 서비스 정의 (content-loader, redis, qdrant)
-  - [ ] 환경 변수 설정
-  - [ ] 볼륨 마운트 설정
-  - [ ] uv 기반 헬스체크
-- [ ] **환경별 설정**
+- [x] **docker-compose.yml**
+  - [x] 서비스 정의 (qdrant, redis)
+  - [x] 환경 변수 설정
+  - [x] 볼륨 마운트 설정 (qdrant_storage, redis_data)
+  - [x] 헬스체크 구현 (curl 기반)
+  - [x] 포트 매핑 설정 (6333, 6334, 6379)
+- [ ] **환경별 설정** (미구현)
   - [ ] `docker-compose.dev.yml`
   - [ ] `docker-compose.prod.yml`
   - [ ] 환경별 오버라이드

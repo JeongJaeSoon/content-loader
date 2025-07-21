@@ -20,6 +20,7 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+.mypy_cache/
 
 # Virtual environments
 .env
@@ -79,3 +80,4 @@ secrets/
 
 # Tilt
 .tiltbuild/
+qdrant_storage/

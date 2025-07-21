@@ -31,7 +31,8 @@ class ContentType(Enum):
 class ChunkType(Enum):
     """Type of processed chunk."""
 
-    ORIGINAL = "original"
+    TEXT = "text"
+    CODE = "code"
     SUMMARY = "summary"
 
 

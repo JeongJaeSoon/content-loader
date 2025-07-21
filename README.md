@@ -52,7 +52,23 @@ uv pip install -e ".[dev]"
 uv run pre-commit install
 ```
 
-### 2. 환경변수 설정
+### 2. 서비스 의존성 실행
+
+먼저 Qdrant vector database와 Redis를 시작합니다:
+
+```bash
+# Docker Compose로 필요한 서비스 실행
+docker-compose up -d
+
+# 서비스 상태 확인
+docker-compose ps
+
+# 로그 확인
+docker-compose logs qdrant
+docker-compose logs redis
+```
+
+### 3. 환경변수 설정
 
 ```bash
 # 필수 환경변수 설정
@@ -62,19 +78,22 @@ export CONFLUENCE_API_TOKEN="your-confluence-token"
 export GITHUB_APP_ID="1605315"
 export GITHUB_PRIVATE_KEY_PATH="./secrets/github-private-key.pem"
 
-# 서비스 연동
+# 서비스 연동 (docker-compose 사용 시)
 export EMBEDDING_SERVICE_URL="http://embedding-service:8000"
-export REDIS_HOST="localhost"
-export REDIS_PORT="6379"
+export QDRANT_URL="http://localhost:6333"
+export REDIS_URL="redis://localhost:6379/0"
 ```
 
-### 3. 실행
+### 4. 실행
 
 uv 환경에서 다음 명령어로 실행:
 
 ```bash
 # 전체 로더 실행
 uv run python main.py
+
+# 데모 로더 실행 (벡터 데이터베이스 테스트용)
+uv run python main.py --demo
 
 # 특정 로더만 실행
 uv run python main.py --loader slack
@@ -85,7 +104,7 @@ uv run python main.py --loader confluence
 uv run python main.py --loader slack --source general-channel
 ```
 
-### 4. 설정 파일 구성
+### 5. 설정 파일 구성
 
 각 로더의 설정은 해당 디렉토리 내 `config/` 폴더에서 관리됩니다:
 
