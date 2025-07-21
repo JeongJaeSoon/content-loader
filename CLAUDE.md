@@ -71,7 +71,10 @@ uv run python main.py --loader slack
 #### Core Layer (`content_loader/core/`)
 
 - `base.py`: BaseExecutor interface, DateRange, retry logic, memory management
-- `models.py`: Common data models (Document, DocumentMetadata, enums)
+- `models/`: Common data models split by functionality:
+  - `base.py`: Core models (Document, DocumentMetadata, enums)
+  - `source.py`: Source-specific models (SlackMessage, GitHubIssue, etc.)
+  - `processing.py`: Document processing models (ProcessedChunk)
 - `config.py`: Global settings and configuration management
 - `exceptions.py`: Common exception types
 - `executor.py`: LoaderExecutor for unified execution
@@ -116,7 +119,7 @@ content-loader/
 - Handles incremental updates with start/end datetime filtering
 - Used by all loaders for efficient data fetching
 
-#### Document (content_loader/core/models.py)
+#### Document (content_loader/core/models/base.py)
 
 - Standard document format across all data sources
 - Contains id, title, text, metadata, timestamps, and URL
@@ -144,8 +147,10 @@ When implementing a new loader:
            yield document
    ```
 
-3. Register in `LoaderExecutor.executors` dictionary
+3. Register in `LoaderExecutor._create_executor()` method (currently a placeholder)
 4. Add configuration in loader's `config/` directory
+
+**Note**: Currently no concrete loader implementations exist - only the core framework is implemented.
 
 ## Environment Variables
 
