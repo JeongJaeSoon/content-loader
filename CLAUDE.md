@@ -44,17 +44,51 @@ uv run pytest --cov=content_loader
 uv run pytest tests/test_slack_loader.py
 ```
 
+## Docker Services
+
+The project includes Docker Compose setup for required services:
+
+### Starting Services
+
+```bash
+# Start Qdrant (vector database) and Redis
+docker-compose up -d
+
+# Check service status
+docker-compose ps
+
+# View logs
+docker-compose logs qdrant
+docker-compose logs redis
+
+# Stop services
+docker-compose down
+```
+
+### Service Configuration
+
+- **Qdrant**: Port 6333 (HTTP), 6334 (gRPC), data persisted in `./qdrant_storage`
+- **Redis**: Port 6379, data persisted in named volume `redis_data`
+- **Health checks**: Built-in health monitoring for both services
+
 ### Running the Application
 
 ```bash
-# Run demo with core functionality
+# Start required services first
+docker-compose up -d
+
+# Run demo loader (✅ Fully functional)
+# This will: generate documents → chunk → embed → store → search
 uv run python main.py --demo
 
 # Run with verbose logging
 uv run python main.py --demo --verbose
 
-# Run specific loader (when implemented)
-uv run python main.py --loader slack
+# Default help and status
+uv run python main.py
+
+# Available loaders: demo (working), slack/confluence/github (not yet implemented)
+uv run python main.py --loader demo
 ```
 
 ## Architecture Overview
@@ -79,24 +113,55 @@ uv run python main.py --loader slack
 - `exceptions.py`: Comprehensive exception hierarchy (production-ready with 20+ exception types)
 - `executor.py`: LoaderExecutor with advanced features (statistics, health checks, concurrent execution)
 
+#### Services Layer (`content_loader/services/`)
+
+**EmbeddingService** (`embedding_service.py`):
+- SentenceTransformers integration with `all-MiniLM-L6-v2` model
+- Batch text embedding with `embed_texts()` method
+- Lazy model loading for memory efficiency
+- Embedding dimension: 384
+
+**VectorStore** (`vector_store.py`):
+- Qdrant vector database client with async operations
+- Collection management with `ensure_collection()`
+- Vector storage with `store_embeddings()` for batch operations
+- Similarity search with `search_similar()` supporting custom thresholds
+- Collection statistics via `get_collection_info()` for monitoring
+
+**DocumentProcessor** (`document_processor.py`):
+- Complete document processing pipeline orchestration
+- Document chunking with configurable chunk size (default: 512 characters)
+- End-to-end processing: Document → Chunks → Embeddings → Vector Storage
+- Search functionality with `search_documents()` including relevance scoring
+
 #### Project Structure
 
 ```
 content-loader/
-├── main.py                    # CLI entry point
+├── main.py                           # CLI entry point (✅ Working)
 ├── content_loader/
-│   ├── core/                  # Core functionality layer
-│   │   ├── base.py           # BaseExecutor interface & utilities
-│   │   ├── models.py         # Common data models
-│   │   ├── config.py         # Settings management
-│   │   ├── exceptions.py     # Exception types
-│   │   └── executor.py       # LoaderExecutor
-│   └── loaders/              # Loader implementations (to be added)
-│       ├── slack/
-│       ├── confluence/
-│       └── github/
-├── docs/                     # Architecture documentation
-└── tests/                    # Test files
+│   ├── core/                         # Core functionality layer
+│   │   ├── base.py                   # BaseExecutor interface & utilities
+│   │   ├── config.py                 # Pydantic Settings (✅ Implemented)
+│   │   ├── exceptions.py             # Exception hierarchy
+│   │   ├── executor.py               # LoaderExecutor
+│   │   └── models/                   # ✅ Organized into modules
+│   │       ├── base.py               # Document, DocumentMetadata, enums
+│   │       ├── source.py             # Source-specific models
+│   │       └── processing.py         # ProcessedChunk for vector storage
+│   ├── loaders/                      # Loader implementations
+│   │   ├── demo/                     # ✅ Fully implemented demo loader
+│   │   │   ├── executor.py           # Complete embedding pipeline
+│   │   │   └── __init__.py
+│   │   └── github/                   # Empty (planned)
+│   └── services/                     # ✅ Complete service layer
+│       ├── document_processor.py     # Document chunking & processing
+│       ├── embedding_service.py      # SentenceTransformers integration
+│       └── vector_store.py           # Qdrant vector database client
+├── docker-compose.yml                # ✅ Qdrant + Redis services
+├── setup.cfg                         # flake8 configuration
+├── docs/                             # Architecture documentation
+└── tests/                            # Test files (to be added)
 ```
 
 ### Data Flow
@@ -154,17 +219,78 @@ When implementing a new loader:
 3. Register in `LoaderExecutor._create_executor()` method (currently a placeholder)
 4. Add configuration in loader's `config/` directory
 
-**Note**: Currently no concrete loader implementations exist - only the core framework is implemented. The existing core framework is production-ready and exceeds the minimal viable product requirements with comprehensive error handling, statistics collection, and operational features.
+## Demo Loader
+
+The project includes a fully functional demo loader for testing the complete pipeline:
+
+### What it does
+
+1. **Generates 10 sample documents** with realistic content (team meetings, code reviews, etc.)
+2. **Processes through embedding pipeline**: Document → Chunks → Embeddings → Vector Storage
+3. **Demonstrates search functionality** with example queries
+4. **Provides collection statistics** and performance metrics
+
+### Usage
+
+```bash
+# Run complete demo pipeline
+uv run python main.py --demo
+
+# Expected output:
+# - Document generation logs
+# - Embedding processing logs
+# - Vector storage confirmation
+# - Search results for "team meeting", "code review", "bug investigation"
+# - Collection statistics
+```
+
+### Implementation
+
+- Located in `content_loader/loaders/demo/executor.py`
+- Extends `BaseExecutor` interface
+- Includes realistic content templates
+- Demonstrates all core functionality
 
 ## Environment Variables
 
-Set these for external service connections:
+Based on the `Settings` class in `content_loader/core/config.py`:
 
-- `SLACK_BOT_TOKEN`: Slack API token
-- `CONFLUENCE_EMAIL` / `CONFLUENCE_API_TOKEN`: Confluence authentication
-- `GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY_PATH`: GitHub App credentials
-- `EMBEDDING_SERVICE_URL`: External embedding service endpoint
-- `REDIS_HOST` / `REDIS_PORT`: Redis cache configuration
+### Required Settings
+
+```bash
+# Vector database (required for demo)
+export QDRANT_URL="http://localhost:6333"  # Default
+
+# Redis (required for demo)
+export REDIS_URL="redis://localhost:6379/0"  # Default
+
+# Optional API tokens (for future loaders)
+export GITHUB_TOKEN="your-github-token"
+export SLACK_BOT_TOKEN="xoxb-your-slack-token"
+
+# Logging
+export LOG_LEVEL="INFO"  # Default
+```
+
+### Configuration Loading
+
+The project uses `pydantic-settings` for automatic environment variable loading:
+
+- Supports `.env` file loading
+- Type validation and conversion
+- Default values for development
+
+## Current Implementation Status
+
+- ✅ **Complete Core Framework**: BaseExecutor, models, exceptions, configuration
+- ✅ **Fully Functional Demo Loader**: Generates documents and processes through embedding pipeline
+- ✅ **Complete Services Layer**: EmbeddingService, VectorStore, DocumentProcessor
+- ✅ **Vector Database Integration**: Qdrant with collection management and search
+- ✅ **Docker Infrastructure**: Qdrant and Redis services
+- ✅ **Working CLI**: Main application with demo mode
+- ❌ **Concrete Loaders**: Slack, Confluence, GitHub loaders not yet implemented
+- ❌ **Tests**: No test files present
+- ❌ **Production Dockerfile**: Only docker-compose for dependencies
 
 ## Important Implementation Notes
 
