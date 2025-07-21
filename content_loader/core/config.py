@@ -9,9 +9,10 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """Application settings."""
 
-    # Database settings
-    database_url: str = Field(
-        default="sqlite:///./content_loader.db", description="Database connection URL"
+    # Vector database settings
+    qdrant_url: str = Field(
+        default="http://localhost:6333",
+        description="Qdrant vector database URL",
     )
 
     # Redis settings
@@ -30,4 +31,8 @@ class Settings(BaseSettings):
     # Logging settings
     log_level: str = Field(default="INFO", description="Logging level")
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }

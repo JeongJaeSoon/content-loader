@@ -143,29 +143,43 @@
 - [x] `README.md` uv 기반으로 업데이트
 - [x] `main.py` 기본 진입점 생성 및 테스트 완료
 
-#### [ ] Core Layer 구현
+#### [x] Core Layer 구현
 
-- [ ] **BaseLoader 인터페이스**
-  - [ ] `src/content_loader/core/base.py` 생성
-  - [ ] `load_source()` 추상 메서드 정의
-  - [ ] `validate_source()` 메서드 정의
-  - [ ] `_should_process_document()` 공통 메서드 구현
-- [ ] **Models 정의**
-  - [ ] `src/content_loader/core/models.py` 생성
-  - [ ] `Document` 데이터 클래스 정의
-  - [ ] `DocumentMetadata` 클래스 정의
-  - [ ] 각 소스별 모델 정의 (SlackMessage, ConfluencePage, etc.)
-- [ ] **Executor 구현**
-  - [ ] `src/content_loader/core/executor.py` 생성
-  - [ ] `LoaderExecutor` 클래스 구현
-  - [ ] `execute_all()` 메서드 구현
-  - [ ] `execute_single_source()` 메서드 구현
-- [ ] **Storage 인터페이스**
-  - [ ] `src/content_loader/core/storage.py` 생성
-  - [ ] 벡터 DB 연동 인터페이스 정의
-- [ ] **Exception 정의**
-  - [ ] `src/content_loader/core/exceptions.py` 생성
-  - [ ] 커스텀 예외 클래스 정의
+- [x] **BaseExecutor 인터페이스**
+  - [x] `content_loader/core/base.py` 생성
+  - [x] `fetch()` 추상 메서드 정의 (AsyncGenerator 스트리밍)
+  - [x] `execute()` 메서드 구현 (재시도 로직 포함)
+  - [x] `_should_process_document()` 공통 메서드 구현
+  - [x] `DateRange` 클래스 구현 (증분 업데이트)
+  - [x] `SimpleRetryHandler` 구현 (지수 백오프)
+  - [x] `SimpleMemoryManager` 구현 (배치 처리)
+- [x] **Models 정의**
+  - [x] `content_loader/core/models.py` 생성
+  - [x] `Document` 데이터 클래스 정의
+  - [x] `DocumentMetadata` 클래스 정의
+  - [x] `ProcessedChunk` 클래스 정의 (벡터 저장용)
+  - [x] `SourceType`, `ContentType`, `ChunkType` Enum 정의
+  - [x] 각 소스별 모델 정의 (SlackMessage, GitHubIssue, GitHubFile, ConfluencePage)
+  - [x] `LoaderSource` 설정 모델 정의
+- [x] **Executor 구현**
+  - [x] `content_loader/core/executor.py` 생성
+  - [x] `LoaderExecutor` 클래스 구현
+  - [x] `run_all_loaders()` 메서드 구현 (병렬 실행)
+  - [x] `run_single_loader()` 메서드 구현 (단일 로더 실행)
+  - [x] `run_loaders_by_type()` 메서드 구현 (타입별 실행)
+  - [x] `health_check()` 메서드 구현
+  - [x] `get_execution_stats()` 메서드 구현
+- [x] **Exception 정의**
+  - [x] `content_loader/core/exceptions.py` 생성
+  - [x] 계층적 커스텀 예외 클래스 정의
+  - [x] 소스별 예외 클래스 정의 (Slack, GitHub, Confluence)
+  - [x] 처리 관련 예외 클래스 정의 (Chunking, Embedding, Summarization)
+  - [x] 유틸리티 함수 구현 (is_retryable_error, extract_retry_delay)
+- [x] **Core Layer 테스트 및 검증**
+  - [x] `test_core.py` 테스트 스크립트 작성
+  - [x] 모든 핵심 기능 단위 테스트 완료
+  - [x] `main.py` 데모 기능 구현 및 검증 완료
+  - [x] 스트리밍, 재시도, 메모리 관리 기능 검증 완료
 
 #### [x] Settings 및 Configuration 시스템
 
@@ -173,7 +187,7 @@
   - [x] `content_loader/core/config.py` 생성
   - [x] Pydantic Settings 사용 (pydantic-settings)
   - [x] 환경변수 로딩 구현 (.env 파일 지원)
-  - [x] 기본 설정값 정의 (database_url, redis_url, github_token, slack_bot_token, log_level)
+  - [x] 기본 설정값 정의 (qdrant_url, redis_url, github_token, slack_bot_token, log_level)
   - [x] extra="ignore" 설정으로 추가 환경변수 무시
 - [ ] **Configuration 로더**
   - [ ] 계층적 설정 로딩 (환경변수 > YAML > 기본값)
