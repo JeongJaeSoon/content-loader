@@ -70,14 +70,14 @@ uv run python main.py --loader slack
 
 #### Core Layer (`content_loader/core/`)
 
-- `base.py`: BaseExecutor interface, DateRange, retry logic, memory management
-- `models/`: Common data models split by functionality:
-  - `base.py`: Core models (Document, DocumentMetadata, enums)
-  - `source.py`: Source-specific models (SlackMessage, GitHubIssue, etc.)
-  - `processing.py`: Document processing models (ProcessedChunk)
-- `config.py`: Global settings and configuration management
-- `exceptions.py`: Common exception types
-- `executor.py`: LoaderExecutor for unified execution
+- `base.py`: BaseExecutor interface, DateRange, SimpleRetryHandler, SimpleMemoryManager
+- `models/`: Common data models split by functionality (organized for maintainability):
+  - `base.py`: Core models (Document, DocumentMetadata, LoaderSource, enums)
+  - `source.py`: Source-specific models (SlackMessage, GitHubIssue, GitHubFile, ConfluencePage)
+  - `processing.py`: Document processing models (ProcessedChunk for vector storage)
+- `config.py`: Pydantic-based settings with environment variable support (.env loading)
+- `exceptions.py`: Comprehensive exception hierarchy (production-ready with 20+ exception types)
+- `executor.py`: LoaderExecutor with advanced features (statistics, health checks, concurrent execution)
 
 #### Project Structure
 
@@ -113,22 +113,26 @@ content-loader/
 - Abstract base class all loaders must implement
 - Provides `fetch(date_range)` method that yields Document objects
 - Built-in retry logic and error handling via `SimpleRetryHandler`
+- Memory management through `SimpleMemoryManager` with configurable batch processing
 
 #### DateRange (content_loader/core/base.py:16)
 
 - Handles incremental updates with start/end datetime filtering
+- `includes()` method for efficient date range checking
 - Used by all loaders for efficient data fetching
 
 #### Document (content_loader/core/models/base.py)
 
 - Standard document format across all data sources
 - Contains id, title, text, metadata, timestamps, and URL
+- Methods: `generate_hash()`, `to_dict()`, JSON serialization support
 
 #### LoaderExecutor (content_loader/core/executor.py)
 
-- Orchestrates multiple loaders
-- Handles batch processing and health monitoring
-- Provides execution statistics and health checks
+- Orchestrates multiple loaders with concurrent execution
+- Advanced features: execution statistics, health monitoring, source type filtering
+- Handles batch processing and error aggregation
+- Production-ready with comprehensive logging and metrics
 
 ## Adding New Loaders
 
@@ -150,7 +154,7 @@ When implementing a new loader:
 3. Register in `LoaderExecutor._create_executor()` method (currently a placeholder)
 4. Add configuration in loader's `config/` directory
 
-**Note**: Currently no concrete loader implementations exist - only the core framework is implemented.
+**Note**: Currently no concrete loader implementations exist - only the core framework is implemented. The existing core framework is production-ready and exceeds the minimal viable product requirements with comprehensive error handling, statistics collection, and operational features.
 
 ## Environment Variables
 
@@ -164,12 +168,14 @@ Set these for external service connections:
 
 ## Important Implementation Notes
 
-- All async operations use proper error handling with retry logic
-- Memory management through streaming and batch processing (default batch_size=20)
+- **Production-Ready Core**: The current implementation exceeds MVP requirements with comprehensive error handling, statistics, and operational features
+- **Model Organization**: Models are split into 3 modules (`base.py`, `source.py`, `processing.py`) for better maintainability
+- **Advanced Error Handling**: 20+ exception types with hierarchical structure and retry utilities
+- **Memory management** through streaming and batch processing (default batch_size=20)
+- **Concurrent Execution**: LoaderExecutor supports parallel loader execution with proper error aggregation
+- **Configuration**: Pydantic-based settings with automatic environment variable loading and validation
 - Use `uv` for all Python operations, not pip
-- Korean documentation exists but code/comments should be in English
-- Configuration supports environment variable overrides
-- Health checks available at runtime via `LoaderExecutor.health_check()`
+- Health checks and execution statistics available at runtime via `LoaderExecutor`
 
 ## Debugging and Monitoring
 

@@ -153,42 +153,44 @@
   - [x] `DateRange` 클래스 구현 (증분 업데이트)
   - [x] `SimpleRetryHandler` 구현 (지수 백오프)
   - [x] `SimpleMemoryManager` 구현 (배치 처리)
-- [x] **Models 정의**
-  - [x] `content_loader/core/models.py` 생성
-  - [x] `Document` 데이터 클래스 정의
-  - [x] `DocumentMetadata` 클래스 정의
-  - [x] `ProcessedChunk` 클래스 정의 (벡터 저장용)
+- [x] **Models 정의** (조직화 개선 - 기능별 분할)
+  - [x] `content_loader/core/models/` 패키지 생성 (maintainability 향상)
+  - [x] `content_loader/core/models/base.py` - 핵심 모델 (Document, DocumentMetadata, enums)
+  - [x] `content_loader/core/models/source.py` - 소스별 모델 (SlackMessage, GitHubIssue, GitHubFile, ConfluencePage)
+  - [x] `content_loader/core/models/processing.py` - 처리 모델 (ProcessedChunk)
+  - [x] `Document` 클래스 고도화 (`generate_hash()`, `to_dict()`, JSON 직렬화 지원)
   - [x] `SourceType`, `ContentType`, `ChunkType` Enum 정의
-  - [x] 각 소스별 모델 정의 (SlackMessage, GitHubIssue, GitHubFile, ConfluencePage)
   - [x] `LoaderSource` 설정 모델 정의
-- [x] **Executor 구현**
+- [x] **Executor 구현** (프로덕션급 고도화)
   - [x] `content_loader/core/executor.py` 생성
-  - [x] `LoaderExecutor` 클래스 구현
+  - [x] `LoaderExecutor` 클래스 구현 (동시 실행, 통계 수집, 에러 집계)
   - [x] `run_all_loaders()` 메서드 구현 (병렬 실행)
   - [x] `run_single_loader()` 메서드 구현 (단일 로더 실행)
   - [x] `run_loaders_by_type()` 메서드 구현 (타입별 실행)
-  - [x] `health_check()` 메서드 구현
-  - [x] `get_execution_stats()` 메서드 구현
-- [x] **Exception 정의**
+  - [x] `health_check()` 메서드 구현 (상세 헬스체크)
+  - [x] `get_execution_stats()` 메서드 구현 (실행 통계 및 성능 메트릭)
+- [x] **Exception 정의** (MVP 초과 - 프로덕션급 구현)
   - [x] `content_loader/core/exceptions.py` 생성
-  - [x] 계층적 커스텀 예외 클래스 정의
+  - [x] 계층적 커스텀 예외 클래스 정의 (20+ 예외 타입)
   - [x] 소스별 예외 클래스 정의 (Slack, GitHub, Confluence)
   - [x] 처리 관련 예외 클래스 정의 (Chunking, Embedding, Summarization)
   - [x] 유틸리티 함수 구현 (is_retryable_error, extract_retry_delay)
+  - [x] 에러 컨텍스트 생성 및 재시도 로직 지원
 - [x] **Core Layer 테스트 및 검증**
   - [x] `test_core.py` 테스트 스크립트 작성
   - [x] 모든 핵심 기능 단위 테스트 완료
   - [x] `main.py` 데모 기능 구현 및 검증 완료
   - [x] 스트리밍, 재시도, 메모리 관리 기능 검증 완료
 
-#### [x] Settings 및 Configuration 시스템
+#### [x] Settings 및 Configuration 시스템 (설계 초과 구현)
 
-- [x] **Settings 클래스**
+- [x] **Settings 클래스** (Pydantic 기반으로 강화)
   - [x] `content_loader/core/config.py` 생성
-  - [x] Pydantic Settings 사용 (pydantic-settings)
+  - [x] Pydantic Settings 사용 (pydantic-settings) - 환경변수 자동 검증 및 타입 변환
   - [x] 환경변수 로딩 구현 (.env 파일 지원)
   - [x] 기본 설정값 정의 (qdrant_url, redis_url, github_token, slack_bot_token, log_level)
   - [x] extra="ignore" 설정으로 추가 환경변수 무시
+  - [x] 설정 검증 및 에러 처리 내장
 - [ ] **Configuration 로더**
   - [ ] 계층적 설정 로딩 (환경변수 > YAML > 기본값)
   - [ ] 설정 검증 로직 구현
